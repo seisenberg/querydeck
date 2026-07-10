@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { splitStatements } from "./sqlsplit";
 import {
   api,
   Catalog,
@@ -9,6 +10,17 @@ import {
   errMessage,
   uid,
 } from "./api";
+
+export interface LogEntry {
+  id: string;
+  ts: string;
+  sql: string;
+  status: "running" | "rows" | "affected" | "ok" | "error";
+  rowCount?: number;
+  affected?: number | null;
+  elapsedMs?: number;
+  error?: string;
+}
 
 export interface TabState {
   id: string;
@@ -23,6 +35,9 @@ export interface TabState {
   maxRows: number;
   /** bump to force the editor to reload `sql` from the store */
   sqlEpoch: number;
+  /** per-console execution log, newest first */
+  log: LogEntry[];
+  bottomTab: "results" | "log";
 }
 
 export interface DdlTarget {
@@ -66,6 +81,7 @@ interface Store {
   importModal: ImportTarget | null;
   exportModal: ExportTarget | null;
   driversModal: boolean;
+  historyModal: boolean;
   toast: string | null;
 
   init(): Promise<void>;
@@ -80,6 +96,7 @@ interface Store {
   setTabProfile(id: string, profileId: string | null): void;
   setTabLimit(id: string, maxRows: number): void;
   setActiveResult(id: string, idx: number): void;
+  setBottomTab(id: string, tab: "results" | "log"): void;
   runQuery(tabId: string, sqlOverride?: string): Promise<void>;
   cancelQuery(tabId: string): void;
 
@@ -89,6 +106,7 @@ interface Store {
   openImport(t: ImportTarget): void;
   openExport(t: ExportTarget): void;
   setDriversModal(open: boolean): void;
+  setHistoryModal(open: boolean): void;
   closeModals(): void;
   showToast(msg: string): void;
 }
@@ -109,7 +127,20 @@ function newTab(profileId: string | null, sql = ""): TabState {
     activeResult: 0,
     maxRows: 1_000,
     sqlEpoch: 0,
+    log: [],
+    bottomTab: "results",
   };
+}
+
+const MAX_LOG_ENTRIES = 300;
+
+function nowTime(): string {
+  return new Date().toLocaleTimeString([], { hour12: false });
+}
+
+function logPreview(sql: string): string {
+  const flat = sql.replace(/\s+/g, " ").trim();
+  return flat.length > 300 ? flat.slice(0, 300) + "…" : flat;
 }
 
 export const useStore = create<Store>((set, get) => {
@@ -130,6 +161,7 @@ export const useStore = create<Store>((set, get) => {
     importModal: null,
     exportModal: null,
     driversModal: false,
+    historyModal: false,
     toast: null,
 
     async init() {
@@ -239,6 +271,12 @@ export const useStore = create<Store>((set, get) => {
       }));
     },
 
+    setBottomTab(id, tab) {
+      set((s) => ({
+        tabs: s.tabs.map((t) => (t.id === id ? { ...t, bottomTab: tab } : t)),
+      }));
+    },
+
     async runQuery(tabId, sqlOverride) {
       const tab = get().tabs.find((t) => t.id === tabId);
       if (!tab || tab.running) return;
@@ -255,13 +293,53 @@ export const useStore = create<Store>((set, get) => {
         .filter((r): r is number => r != null);
       if (oldIds.length) void api.resultsFree(oldIds);
 
+      // Log the run as started and flip the bottom pane to the Log tab.
+      const runLogId = uid();
+      const startedEntry: LogEntry = {
+        id: runLogId,
+        ts: nowTime(),
+        sql: logPreview(sql),
+        status: "running",
+      };
       set((s) => ({
         tabs: s.tabs.map((t) =>
-          t.id === tabId ? { ...t, running: true, error: null } : t,
+          t.id === tabId
+            ? {
+                ...t,
+                running: true,
+                error: null,
+                bottomTab: "log",
+                log: [startedEntry, ...t.log].slice(0, MAX_LOG_ENTRIES),
+              }
+            : t,
         ),
       }));
+
+      const finishLog = (entries: LogEntry[]) => (t: TabState): LogEntry[] =>
+        [...entries, ...t.log.filter((l) => l.id !== runLogId)].slice(0, MAX_LOG_ENTRIES);
+
       try {
         const res = await api.queryRun(tab.profileId, tab.id, sql, tab.maxRows);
+        // One finished entry per statement (newest first), plus the error if any.
+        const entries: LogEntry[] = res.statements.map((st) => ({
+          id: uid(),
+          ts: nowTime(),
+          sql: logPreview(st.sql),
+          status: st.kind,
+          rowCount: st.kind === "rows" ? st.rowCount : undefined,
+          affected: st.affected,
+          elapsedMs: st.elapsedMs,
+        }));
+        if (res.error) {
+          entries.push({
+            id: uid(),
+            ts: nowTime(),
+            sql: logPreview(splitStatementsForLog(sql, res.error.statementIndex)),
+            status: "error",
+            error: res.error.message,
+          });
+        }
+        entries.reverse();
         set((s) => ({
           tabs: s.tabs.map((t) =>
             t.id === tabId
@@ -272,18 +350,31 @@ export const useStore = create<Store>((set, get) => {
                   error: res.error,
                   totalElapsedMs: res.totalElapsedMs,
                   activeResult: pickActiveResult(res.statements),
+                  bottomTab: "results",
+                  log: finishLog(entries)(t),
                 }
               : t,
           ),
         }));
       } catch (e) {
+        const message = errMessage(e);
         set((s) => ({
           tabs: s.tabs.map((t) =>
             t.id === tabId
               ? {
                   ...t,
                   running: false,
-                  error: { message: errMessage(e), kind: "internal", statementIndex: 0 },
+                  error: { message, kind: "internal", statementIndex: 0 },
+                  bottomTab: "results",
+                  log: finishLog([
+                    {
+                      id: uid(),
+                      ts: nowTime(),
+                      sql: logPreview(sql),
+                      status: "error",
+                      error: message,
+                    },
+                  ])(t),
                 }
               : t,
           ),
@@ -314,8 +405,17 @@ export const useStore = create<Store>((set, get) => {
     setDriversModal(open) {
       set({ driversModal: open });
     },
+    setHistoryModal(open) {
+      set({ historyModal: open });
+    },
     closeModals() {
-      set({ ddlModal: null, importModal: null, exportModal: null, driversModal: false });
+      set({
+        ddlModal: null,
+        importModal: null,
+        exportModal: null,
+        driversModal: false,
+        historyModal: false,
+      });
     },
     showToast(msg) {
       set({ toast: msg });
@@ -329,4 +429,9 @@ export const useStore = create<Store>((set, get) => {
 function pickActiveResult(statements: StatementOutcome[]): number {
   const idx = statements.findIndex((s) => s.kind === "rows");
   return idx === -1 ? Math.max(0, statements.length - 1) : idx;
+}
+
+/** Text of the statement that failed (for the log entry). */
+function splitStatementsForLog(script: string, statementIndex: number): string {
+  return splitStatements(script)[statementIndex]?.sql ?? script;
 }

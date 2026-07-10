@@ -2,6 +2,7 @@ mod catalog;
 mod ddl;
 mod drivers;
 mod error;
+mod history;
 mod registry;
 mod sqlsplit;
 mod state;
@@ -139,8 +140,13 @@ async fn query_run(
             });
         }
 
+        let profile_name = state
+            .profile(&profile_id)
+            .map(|p| p.name)
+            .unwrap_or_else(|_| profile_id.clone());
         let mut outcomes: Vec<StatementOutcome> = Vec::new();
         let mut run_error: Option<RunError> = None;
+        let mut history_entries: Vec<history::HistoryEntry> = Vec::new();
 
         for (idx, stmt) in statements.iter().enumerate() {
             let stmt_start = std::time::Instant::now();
@@ -177,6 +183,17 @@ async fn query_run(
                         let row_count = rows.len();
                         let truncated = meta.stopped_early && max_rows > 0 && row_count >= max_rows;
                         let result_id = state.store_result(cols.clone(), std::mem::take(&mut rows));
+                        history_entries.push(history::HistoryEntry {
+                            ts: history::now_iso(),
+                            profile_id: profile_id.clone(),
+                            profile_name: profile_name.clone(),
+                            sql: stmt.sql.clone(),
+                            kind: "rows".into(),
+                            row_count: Some(row_count),
+                            affected: None,
+                            elapsed_ms,
+                            error: None,
+                        });
                         outcomes.push(StatementOutcome {
                             sql: preview,
                             kind: "rows".into(),
@@ -188,9 +205,21 @@ async fn query_run(
                             elapsed_ms,
                         });
                     } else {
+                        let kind = if meta.affected.is_some() { "affected" } else { "ok" };
+                        history_entries.push(history::HistoryEntry {
+                            ts: history::now_iso(),
+                            profile_id: profile_id.clone(),
+                            profile_name: profile_name.clone(),
+                            sql: stmt.sql.clone(),
+                            kind: kind.into(),
+                            row_count: None,
+                            affected: meta.affected,
+                            elapsed_ms,
+                            error: None,
+                        });
                         outcomes.push(StatementOutcome {
                             sql: preview,
-                            kind: if meta.affected.is_some() { "affected" } else { "ok" }.into(),
+                            kind: kind.into(),
                             result_id: None,
                             columns: None,
                             row_count: 0,
@@ -201,6 +230,17 @@ async fn query_run(
                     }
                 }
                 Err(e) => {
+                    history_entries.push(history::HistoryEntry {
+                        ts: history::now_iso(),
+                        profile_id: profile_id.clone(),
+                        profile_name: profile_name.clone(),
+                        sql: stmt.sql.clone(),
+                        kind: "error".into(),
+                        row_count: None,
+                        affected: None,
+                        elapsed_ms,
+                        error: Some(e.message.clone()),
+                    });
                     run_error = Some(RunError {
                         message: e.message,
                         kind: e.kind,
@@ -209,6 +249,10 @@ async fn query_run(
                     break;
                 }
             }
+        }
+
+        if let Err(e) = history::append(&history_entries) {
+            eprintln!("history append failed: {}", e.message);
         }
 
         Ok(RunResponse {
@@ -437,6 +481,28 @@ fn job_cancel(state: State<'_, Arc<AppState>>, job_id: String) {
     }
 }
 
+// ----------------------------------------------------------------- history --
+
+#[tauri::command]
+async fn history_list(
+    limit: Option<usize>,
+    filter: Option<String>,
+    profile_id: Option<String>,
+) -> AppResult<Vec<history::HistoryEntry>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        history::list(limit.unwrap_or(500), filter, profile_id)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn history_clear() -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(history::clear)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
 // ---------------------------------------------------------------- registry --
 
 #[tauri::command]
@@ -480,6 +546,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .manage(Arc::new(CatalogCache::default()))
+        .setup(|app| {
+            use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
+            let show_history = MenuItemBuilder::with_id("show-history", "Show Query History…")
+                .accelerator("CmdOrCtrl+Y")
+                .build(app)?;
+            let history_menu = SubmenuBuilder::new(app, "History").item(&show_history).build()?;
+            let menu = Menu::default(app.handle())?;
+            menu.append(&history_menu)?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id() == "show-history" {
+                    use tauri::Emitter;
+                    let _ = app.emit("open-history", ());
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             profiles_list,
             profile_save,
@@ -498,7 +581,9 @@ pub fn run() {
             job_cancel,
             drivers_registry,
             driver_download,
-            env_status
+            env_status,
+            history_list,
+            history_clear
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

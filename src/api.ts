@@ -169,6 +169,18 @@ export interface DriverPackage {
   path: string | null;
 }
 
+export interface HistoryEntry {
+  ts: string;
+  profileId: string;
+  profileName: string;
+  sql: string;
+  kind: "rows" | "affected" | "ok" | "error";
+  rowCount?: number;
+  affected?: number;
+  elapsedMs: number;
+  error?: string;
+}
+
 export interface EnvStatus {
   odbcAvailable: boolean;
   odbcDetail: string;
@@ -228,6 +240,14 @@ export const api = {
   driversRegistry: () => invoke<DriverPackage[]>("drivers_registry"),
   driverDownload: (id: string) => invoke<string>("driver_download", { id }),
   envStatus: () => invoke<EnvStatus>("env_status"),
+
+  historyList: (limit?: number, filter?: string, profileId?: string) =>
+    invoke<HistoryEntry[]>("history_list", {
+      limit: limit ?? 500,
+      filter: filter || null,
+      profileId: profileId || null,
+    }),
+  historyClear: () => invoke<void>("history_clear"),
 };
 
 export function uid(): string {

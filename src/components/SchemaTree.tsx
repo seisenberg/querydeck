@@ -30,6 +30,13 @@ export default function SchemaTree() {
       <div className="sidebar-header">
         <span>Connections</span>
         <span className="actions">
+          <button
+            className="small ghost"
+            title="Query history (⌘Y)"
+            onClick={() => useStore.getState().setHistoryModal(true)}
+          >
+            ⏱
+          </button>
           <button className="small ghost" title="Driver manager" onClick={() => setDriversModal(true)}>
             ⚙
           </button>

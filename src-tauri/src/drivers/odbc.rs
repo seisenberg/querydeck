@@ -92,24 +92,35 @@ unsafe impl Sync for OdbcLib {}
 
 static ODBC: OnceCell<Result<Arc<OdbcLib>, String>> = OnceCell::new();
 
-fn candidates() -> Vec<&'static str> {
+fn candidates() -> Vec<String> {
     #[cfg(windows)]
     {
-        vec!["odbc32.dll"]
+        vec!["odbc32.dll".into()]
     }
     #[cfg(target_os = "macos")]
     {
-        vec![
-            "libodbc.2.dylib",
-            "libodbc.dylib",
-            "/opt/homebrew/lib/libodbc.2.dylib",
-            "/usr/local/lib/libodbc.2.dylib",
-            "/opt/local/lib/libodbc.2.dylib",
-        ]
+        let mut c: Vec<String> = vec![
+            "libodbc.2.dylib".into(),
+            "libodbc.dylib".into(),
+            "/opt/homebrew/lib/libodbc.2.dylib".into(),
+            "/usr/local/lib/libodbc.2.dylib".into(),
+            "/opt/local/lib/libodbc.2.dylib".into(),
+        ];
+        // User-local Homebrew (no-sudo install).
+        if let Some(home) = dirs::home_dir() {
+            c.push(home.join("homebrew/lib/libodbc.2.dylib").to_string_lossy().into_owned());
+            c.push(home.join(".local/lib/libodbc.2.dylib").to_string_lossy().into_owned());
+        }
+        c
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        vec!["libodbc.so.2", "libodbc.so", "libodbc.so.1"]
+        let mut c: Vec<String> =
+            vec!["libodbc.so.2".into(), "libodbc.so".into(), "libodbc.so.1".into()];
+        if let Some(home) = dirs::home_dir() {
+            c.push(home.join(".local/lib/libodbc.so.2").to_string_lossy().into_owned());
+        }
+        c
     }
 }
 

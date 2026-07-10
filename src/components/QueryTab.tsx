@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { splitStatements } from "../sqlsplit";
-import { ROW_LIMITS, TabState, limitLabel, useStore } from "../store";
+import { LogEntry, ROW_LIMITS, TabState, limitLabel, useStore } from "../store";
 import SqlEditor from "./SqlEditor";
 import ResultsGrid from "./ResultsGrid";
 
@@ -17,6 +17,7 @@ export default function QueryTab({ tab }: Props) {
   const setTabProfile = useStore((s) => s.setTabProfile);
   const setTabLimit = useStore((s) => s.setTabLimit);
   const setActiveResult = useStore((s) => s.setActiveResult);
+  const setBottomTab = useStore((s) => s.setBottomTab);
   const runQuery = useStore((s) => s.runQuery);
   const cancelQuery = useStore((s) => s.cancelQuery);
   const openConnectionModal = useStore((s) => s.openConnectionModal);
@@ -123,14 +124,31 @@ export default function QueryTab({ tab }: Props) {
       />
 
       <div className="results-area">
-        {tab.error && (
+        <div className="bottom-tabs">
+          <button
+            className={`btab ${tab.bottomTab === "results" ? "active" : ""}`}
+            onClick={() => setBottomTab(tab.id, "results")}
+          >
+            Results
+          </button>
+          <button
+            className={`btab ${tab.bottomTab === "log" ? "active" : ""}`}
+            onClick={() => setBottomTab(tab.id, "log")}
+          >
+            Log{tab.log.length > 0 ? ` (${tab.log.length})` : ""}
+          </button>
+        </div>
+
+        {tab.bottomTab === "log" && <LogPane entries={tab.log} />}
+
+        {tab.bottomTab === "results" && tab.error && (
           <div className="error-box">
             {tab.results.length > 0 && `statement ${tab.error.statementIndex + 1}: `}
             {tab.error.message}
           </div>
         )}
 
-        {tab.results.length > 1 && (
+        {tab.bottomTab === "results" && tab.results.length > 1 && (
           <div className="result-tabs">
             {tab.results.map((r, i) => (
               <button
@@ -150,7 +168,8 @@ export default function QueryTab({ tab }: Props) {
           </div>
         )}
 
-        {activeOutcome ? (
+        {tab.bottomTab === "results" &&
+        activeOutcome ? (
           activeOutcome.kind === "rows" ? (
             <>
               <ResultsGrid outcome={activeOutcome} />
@@ -174,6 +193,7 @@ export default function QueryTab({ tab }: Props) {
             </div>
           )
         ) : (
+          tab.bottomTab === "results" &&
           !tab.error && (
             <div className="placeholder">
               {tab.running ? (
@@ -191,6 +211,42 @@ export default function QueryTab({ tab }: Props) {
         )}
       </div>
     </>
+  );
+}
+
+function LogPane({ entries }: { entries: LogEntry[] }) {
+  if (entries.length === 0) {
+    return (
+      <div className="placeholder">
+        <div>No queries run in this console yet.</div>
+        <div className="hint">Each run is logged here with its timing and outcome.</div>
+      </div>
+    );
+  }
+  return (
+    <div className="log-pane">
+      {entries.map((e) => (
+        <div key={e.id} className={`log-row ${e.status}`}>
+          <span className="log-ts">{e.ts}</span>
+          <span className={`log-status ${e.status}`}>
+            {e.status === "running" && (
+              <>
+                <span className="spinner" /> running
+              </>
+            )}
+            {e.status === "rows" && `${(e.rowCount ?? 0).toLocaleString()} rows`}
+            {e.status === "affected" && `${(e.affected ?? 0).toLocaleString()} affected`}
+            {e.status === "ok" && "ok"}
+            {e.status === "error" && "error"}
+          </span>
+          {e.elapsedMs != null && <span className="log-elapsed">{e.elapsedMs} ms</span>}
+          <span className="log-sql" title={e.error ? `${e.sql}\n\n${e.error}` : e.sql}>
+            {e.sql}
+          </span>
+          {e.error && <span className="log-error">{e.error}</span>}
+        </div>
+      ))}
+    </div>
   );
 }
 
