@@ -8,6 +8,18 @@ mod state;
 mod transfer;
 mod value;
 
+/// Re-exports for integration tests.
+pub mod testkit {
+    pub use crate::catalog::*;
+    pub use crate::ddl::generate_table_ddl;
+    pub use crate::drivers::{
+        connect, ConnectionProfile, DbConnection, Dialect, DriverParams, RowEvent, SqliteParams,
+    };
+    pub use crate::error::ErrorKind;
+    pub use crate::sqlsplit::split_statements;
+    pub use crate::value::{ColumnMeta, DbValue};
+}
+
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::atomic::Ordering;

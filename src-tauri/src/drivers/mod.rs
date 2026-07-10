@@ -136,6 +136,7 @@ impl Dialect {
 }
 
 /// Result of executing a single statement.
+#[derive(Debug)]
 pub struct ExecMeta {
     /// Present when the statement produced a result set.
     pub columns: Option<Vec<ColumnMeta>>,
