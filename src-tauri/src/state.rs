@@ -14,6 +14,8 @@ use crate::value::{ColumnMeta, DbValue};
 const MAX_STORED_ROWS: usize = 2_000_000;
 
 pub struct StoredResult {
+    /// Kept alongside rows for future use (e.g. exporting a stored result).
+    #[allow(dead_code)]
     pub columns: Vec<ColumnMeta>,
     pub rows: Vec<Vec<DbValue>>,
 }

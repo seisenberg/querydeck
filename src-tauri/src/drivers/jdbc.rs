@@ -54,22 +54,43 @@ pub fn status() -> (bool, String) {
             return (true, format!("JAVA_HOME = {home}"));
         }
     }
-    let java_on_path = std::env::var_os("PATH")
-        .map(|p| {
-            std::env::split_paths(&p).any(|d| {
-                d.join("java").exists() || d.join("java.exe").exists()
-            })
-        })
-        .unwrap_or(false);
-    if java_on_path {
-        (true, "java found on PATH".into())
-    } else {
+    // On macOS /usr/bin/java is a stub that exists even with no JVM
+    // installed; ask java_home instead of trusting PATH.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("/usr/libexec/java_home").output() {
+            if out.status.success() {
+                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !p.is_empty() {
+                    return (true, format!("JVM at {p}"));
+                }
+            }
+        }
         (
             false,
             "No Java runtime found. JDBC connections need a Java 11+ runtime \
-             (e.g. Temurin from adoptium.net)."
+             (e.g. Temurin from adoptium.net) — install one or set JAVA_HOME."
                 .into(),
         )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let java_on_path = std::env::var_os("PATH")
+            .map(|p| {
+                std::env::split_paths(&p)
+                    .any(|d| d.join("java").exists() || d.join("java.exe").exists())
+            })
+            .unwrap_or(false);
+        if java_on_path {
+            (true, "java found on PATH".into())
+        } else {
+            (
+                false,
+                "No Java runtime found. JDBC connections need a Java 11+ runtime \
+                 (e.g. Temurin from adoptium.net)."
+                    .into(),
+            )
+        }
     }
 }
 

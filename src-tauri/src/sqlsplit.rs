@@ -117,21 +117,6 @@ pub struct Statement {
     pub offset: usize,
 }
 
-/// True when the statement is likely to produce a result set. Used only as a
-/// hint (drivers report actual outcome).
-pub fn looks_like_query(sql: &str) -> bool {
-    let head = sql
-        .trim_start()
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    matches!(
-        head.as_str(),
-        "SELECT" | "WITH" | "SHOW" | "EXPLAIN" | "DESCRIBE" | "DESC" | "PRAGMA" | "VALUES" | "TABLE" | "CALL" | "RETURNING"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
