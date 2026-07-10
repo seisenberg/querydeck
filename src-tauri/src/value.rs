@@ -36,6 +36,16 @@ impl DbValue {
         matches!(self, DbValue::Null)
     }
 
+    /// Approximate heap + inline footprint in bytes, for memory-capping the
+    /// result store.
+    pub fn approx_bytes(&self) -> usize {
+        const ENUM: usize = std::mem::size_of::<DbValue>();
+        match self {
+            DbValue::Text(s) => ENUM + s.capacity(),
+            _ => ENUM,
+        }
+    }
+
     /// Plain-text rendering (exports, SQL literal building).
     pub fn as_text(&self) -> String {
         match self {

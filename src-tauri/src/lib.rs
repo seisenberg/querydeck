@@ -20,6 +20,7 @@ pub mod testkit {
     };
     pub use crate::error::ErrorKind;
     pub use crate::sqlsplit::split_statements;
+    pub use crate::state::AppState;
     pub use crate::value::{ColumnMeta, DbValue};
 }
 

@@ -4,22 +4,31 @@ import { api, CellValue, StatementOutcome } from "../api";
 const ROW_H = 26;
 const HEADER_H = 28;
 const PAGE = 500;
-const OVERSCAN = 12;
+/** Rendered rows beyond the viewport on each side. Large enough that normal
+ * momentum scrolling stays on already-rendered DOM most frames. */
+const OVERSCAN = 30;
+/** The render window only moves in steps of this many rows, so scroll events
+ * between steps cost zero React work — the browser scrolls natively. */
+const WINDOW_STEP = 10;
 
 interface Props {
   outcome: StatementOutcome;
 }
 
 /**
- * Windowed grid over a backend-stored result set. Only visible rows are
- * materialized; pages of rows are fetched on demand and cached.
+ * Windowed grid over a backend-stored result set, tuned for native macOS
+ * momentum scrolling: the scroll container is plain `overflow: auto` (so the
+ * OS drives inertia), scroll events are rAF-coalesced, and React re-renders
+ * only when the quantized row window actually moves.
  */
 export default function ResultsGrid({ outcome }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, CellValue[][]>());
   const inflight = useRef(new Set<number>());
+  const fetchTimer = useRef<number | undefined>(undefined);
+  const rafPending = useRef(false);
   const [, setVersion] = useState(0);
-  const [scrollTop, setScrollTop] = useState(0);
+  const [windowStart, setWindowStart] = useState(0);
   const [viewH, setViewH] = useState(400);
   const [sel, setSel] = useState<{ r: number; c: number } | null>(null);
 
@@ -34,7 +43,7 @@ export default function ResultsGrid({ outcome }: Props) {
     pages.current.clear();
     inflight.current.clear();
     setSel(null);
-    setScrollTop(0);
+    setWindowStart(0);
     if (containerRef.current) containerRef.current.scrollTop = 0;
     setVersion((v) => v + 1);
   }, [resultId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -49,10 +58,11 @@ export default function ResultsGrid({ outcome }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  const firstRow = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
-  const lastRow = Math.min(rowCount - 1, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN);
+  const visibleRows = Math.ceil(viewH / ROW_H);
+  const firstRow = windowStart;
+  const lastRow = Math.min(rowCount - 1, windowStart + visibleRows + OVERSCAN * 2);
 
-  const ensurePages = useCallback(
+  const fetchPages = useCallback(
     (from: number, to: number) => {
       if (resultId == null) return;
       const p0 = Math.floor(from / PAGE);
@@ -64,10 +74,9 @@ export default function ResultsGrid({ outcome }: Props) {
           .pageFetch(resultId, p * PAGE, PAGE)
           .then((res) => {
             pages.current.set(p, res.rows);
-            // rudimentary cache cap: keep ~40k rows in the webview
+            // Cache cap: keep ~40k rows in the webview, evict far pages.
             if (pages.current.size > 80) {
-              const keys = [...pages.current.keys()];
-              for (const k of keys) {
+              for (const k of pages.current.keys()) {
                 if (k < p0 - 20 || k > p1 + 20) pages.current.delete(k);
                 if (pages.current.size <= 60) break;
               }
@@ -83,9 +92,45 @@ export default function ResultsGrid({ outcome }: Props) {
     [resultId],
   );
 
+  /** Debounced fetch: during a fast flick we skip intermediate windows and
+   * always fetch the one the user lands on (trailing edge, ~50ms). */
+  const scheduleFetch = useCallback(
+    (from: number, to: number, immediate: boolean) => {
+      window.clearTimeout(fetchTimer.current);
+      if (immediate) {
+        fetchPages(from, to);
+      } else {
+        fetchTimer.current = window.setTimeout(() => fetchPages(from, to), 50);
+      }
+    },
+    [fetchPages],
+  );
+
+  // Initial + result-change fetch.
   useEffect(() => {
-    if (rowCount > 0) ensurePages(firstRow, lastRow);
-  }, [firstRow, lastRow, rowCount, ensurePages]);
+    if (rowCount > 0) scheduleFetch(firstRow, lastRow, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resultId, rowCount, viewH]);
+
+  const onScroll = useCallback(() => {
+    if (rafPending.current) return;
+    rafPending.current = true;
+    requestAnimationFrame(() => {
+      rafPending.current = false;
+      const el = containerRef.current;
+      if (!el) return;
+      const raw = Math.max(0, Math.floor(el.scrollTop / ROW_H) - OVERSCAN);
+      const quantized = Math.floor(raw / WINDOW_STEP) * WINDOW_STEP;
+      setWindowStart((prev) => {
+        if (quantized === prev) return prev; // pure horizontal / sub-step scroll: no re-render
+        const to = Math.min(rowCount - 1, quantized + visibleRows + OVERSCAN * 2);
+        // Fast flick (window jumped > a page): trailing fetch only.
+        const fast = Math.abs(quantized - prev) > PAGE;
+        scheduleFetch(quantized, to, !fast);
+        return quantized;
+      });
+    });
+  }, [rowCount, visibleRows, scheduleFetch]);
 
   const getRow = (r: number): CellValue[] | null => {
     const page = pages.current.get(Math.floor(r / PAGE));
@@ -147,7 +192,7 @@ export default function ResultsGrid({ outcome }: Props) {
     <div
       className="grid"
       ref={containerRef}
-      onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
+      onScroll={onScroll}
       tabIndex={0}
       onKeyDown={onKeyDown}
     >

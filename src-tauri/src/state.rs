@@ -9,15 +9,19 @@ use crate::drivers::{self, ConnectionProfile, DbConnection};
 use crate::error::{AppError, AppResult};
 use crate::value::{ColumnMeta, DbValue};
 
-/// Cap on rows kept in memory across all stored result sets. Oldest results
-/// are evicted first once the cap is exceeded.
+/// Caps on the in-memory result store. Oldest results are evicted first once
+/// either cap is exceeded — rows for pathological narrow results, bytes for
+/// wide/texty ones.
 const MAX_STORED_ROWS: usize = 2_000_000;
+const MAX_STORED_BYTES: usize = 256 * 1024 * 1024;
 
 pub struct StoredResult {
     /// Kept alongside rows for future use (e.g. exporting a stored result).
     #[allow(dead_code)]
     pub columns: Vec<ColumnMeta>,
     pub rows: Vec<Vec<DbValue>>,
+    /// Approximate memory footprint of `rows`.
+    pub approx_bytes: usize,
 }
 
 type SharedConn = Arc<Mutex<Option<Box<dyn DbConnection>>>>;
@@ -42,6 +46,7 @@ struct ResultStore {
     map: HashMap<u64, StoredResult>,
     insertion_order: Vec<u64>,
     total_rows: usize,
+    total_bytes: usize,
 }
 
 pub fn session_key(profile_id: &str, tab_id: &str) -> String {
@@ -197,18 +202,35 @@ impl AppState {
     }
 
     pub fn store_result(&self, columns: Vec<ColumnMeta>, rows: Vec<Vec<DbValue>>) -> u64 {
+        let approx_bytes: usize = rows
+            .iter()
+            .map(|r| {
+                std::mem::size_of::<Vec<DbValue>>()
+                    + r.iter().map(|v| v.approx_bytes()).sum::<usize>()
+            })
+            .sum();
         let id = self.next_result_id.fetch_add(1, Ordering::Relaxed) + 1;
         let mut store = self.results.lock();
         store.total_rows += rows.len();
-        store.map.insert(id, StoredResult { columns, rows });
+        store.total_bytes += approx_bytes;
+        store.map.insert(id, StoredResult { columns, rows, approx_bytes });
         store.insertion_order.push(id);
-        while store.total_rows > MAX_STORED_ROWS && store.insertion_order.len() > 1 {
+        while (store.total_rows > MAX_STORED_ROWS || store.total_bytes > MAX_STORED_BYTES)
+            && store.insertion_order.len() > 1
+        {
             let oldest = store.insertion_order.remove(0);
             if let Some(r) = store.map.remove(&oldest) {
                 store.total_rows -= r.rows.len();
+                store.total_bytes -= r.approx_bytes;
             }
         }
         id
+    }
+
+    /// Store totals: (results, rows, approx bytes) — for stress checks.
+    pub fn store_stats(&self) -> (usize, usize, usize) {
+        let store = self.results.lock();
+        (store.map.len(), store.total_rows, store.total_bytes)
     }
 
     pub fn with_result<T>(
@@ -229,6 +251,7 @@ impl AppState {
         for id in ids {
             if let Some(r) = store.map.remove(id) {
                 store.total_rows -= r.rows.len();
+                store.total_bytes -= r.approx_bytes;
             }
         }
         store.insertion_order.retain(|i| !ids.contains(i));

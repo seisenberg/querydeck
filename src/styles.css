@@ -347,6 +347,10 @@ input[type="checkbox"] {
   background: var(--bg);
   user-select: none;
   outline: none;
+  /* own compositor layer + no scroll chaining: keeps macOS momentum
+     scrolling smooth over large virtualized tables */
+  transform: translateZ(0);
+  overscroll-behavior: contain;
 }
 .grid table {
   border-collapse: separate;
