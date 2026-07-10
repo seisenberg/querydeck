@@ -1,0 +1,235 @@
+import { invoke } from "@tauri-apps/api/core";
+
+// ---- Types mirrored from the Rust backend ----
+
+export type DriverKind = "sqlite" | "postgres" | "mysql" | "odbc" | "jdbc";
+
+export interface SqliteParams {
+  path: string;
+}
+export interface PostgresParams {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  ssl_mode: "disable" | "prefer" | "require";
+  accept_invalid_certs: boolean;
+}
+export interface MysqlParams {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  use_ssl: boolean;
+  accept_invalid_certs: boolean;
+}
+export interface OdbcParams {
+  connection_string: string;
+}
+export interface JdbcParams {
+  url: string;
+  driver_class: string;
+  jars: string[];
+  user: string;
+  password: string;
+}
+
+export type DriverParams =
+  | SqliteParams
+  | PostgresParams
+  | MysqlParams
+  | OdbcParams
+  | JdbcParams;
+
+export interface ConnectionProfile {
+  id: string;
+  name: string;
+  driver: DriverKind;
+  params: DriverParams;
+}
+
+export interface ColumnMeta {
+  name: string;
+  typeName: string;
+}
+
+export type CellValue = null | boolean | number | string;
+
+export interface StatementOutcome {
+  sql: string;
+  kind: "rows" | "affected" | "ok";
+  resultId: number | null;
+  columns: ColumnMeta[] | null;
+  rowCount: number;
+  truncated: boolean;
+  affected: number | null;
+  elapsedMs: number;
+}
+
+export interface RunError {
+  message: string;
+  kind: string;
+  statementIndex: number;
+}
+
+export interface RunResponse {
+  statements: StatementOutcome[];
+  error: RunError | null;
+  totalElapsedMs: number;
+}
+
+export interface ColumnInfo {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+  default?: string;
+}
+
+export interface TableInfo {
+  name: string;
+  kind: string;
+  columns: ColumnInfo[];
+  pk: string[];
+  indexes?: string[];
+  foreign_keys?: string[];
+}
+
+export interface SchemaInfo {
+  name: string;
+  tables: TableInfo[];
+}
+
+export interface Catalog {
+  schemas: SchemaInfo[];
+}
+
+export interface ImportPreview {
+  columns: string[];
+  rows: string[][];
+  delimiter: string;
+  hasHeader: boolean;
+  totalBytes: number;
+  inferredTypes: string[];
+}
+
+export interface ImportMapping {
+  fileIndex: number;
+  column: string;
+  dataType?: string;
+}
+
+export interface ImportRequest {
+  profileId: string;
+  jobId: string;
+  path: string;
+  delimiter: string;
+  hasHeader: boolean;
+  schema: string;
+  table: string;
+  createTable: boolean;
+  mappings: ImportMapping[];
+  emptyAsNull: boolean;
+  batchSize: number;
+}
+
+export interface ImportResult {
+  rowsImported: number;
+  elapsedMs: number;
+}
+
+export interface ExportRequest {
+  profileId: string;
+  jobId: string;
+  sql: string;
+  format: "csv" | "tsv" | "json" | "sql";
+  path: string;
+  includeHeader: boolean;
+  limit: number;
+  tableName: string;
+}
+
+export interface ExportResult {
+  rowsExported: number;
+  elapsedMs: number;
+}
+
+export interface DriverPackage {
+  id: string;
+  title: string;
+  version: string;
+  url: string;
+  filename: string;
+  driverClass: string;
+  urlTemplate: string;
+  defaultPort: number;
+  notes: string;
+  downloaded: boolean;
+  path: string | null;
+}
+
+export interface EnvStatus {
+  odbcAvailable: boolean;
+  odbcDetail: string;
+  jvmAvailable: boolean;
+  jvmDetail: string;
+}
+
+export interface AppError {
+  kind: string;
+  message: string;
+}
+
+export function errMessage(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e) {
+    return String((e as AppError).message);
+  }
+  return String(e);
+}
+
+// ---- Command wrappers ----
+
+export const api = {
+  profilesList: () => invoke<ConnectionProfile[]>("profiles_list"),
+  profileSave: (profile: ConnectionProfile) =>
+    invoke<void>("profile_save", { profile }),
+  profileDelete: (profileId: string) =>
+    invoke<void>("profile_delete", { profileId }),
+  connectionTest: (profile: ConnectionProfile) =>
+    invoke<string>("connection_test", { profile }),
+
+  queryRun: (profileId: string, tabId: string, sql: string, maxRows: number) =>
+    invoke<RunResponse>("query_run", { profileId, tabId, sql, maxRows }),
+  queryCancel: (profileId: string, tabId: string) =>
+    invoke<void>("query_cancel", { profileId, tabId }),
+  pageFetch: (resultId: number, offset: number, limit: number) =>
+    invoke<{ rows: CellValue[][] }>("page_fetch", { resultId, offset, limit }),
+  resultsFree: (resultIds: number[]) =>
+    invoke<void>("results_free", { resultIds }),
+  sessionClose: (profileId: string, tabId: string) =>
+    invoke<void>("session_close", { profileId, tabId }),
+
+  catalogGet: (profileId: string, refresh: boolean) =>
+    invoke<Catalog>("catalog_get", { profileId, refresh }),
+  ddlGet: (profileId: string, schema: string, table: string) =>
+    invoke<{ ddl: string; native: boolean }>("ddl_get", { profileId, schema, table }),
+
+  importPreview: (path: string, delimiter?: string, hasHeader?: boolean) =>
+    invoke<ImportPreview>("import_preview", {
+      path,
+      delimiter: delimiter ?? null,
+      hasHeader: hasHeader ?? null,
+    }),
+  importRun: (req: ImportRequest) => invoke<ImportResult>("import_run", { req }),
+  exportRun: (req: ExportRequest) => invoke<ExportResult>("export_run", { req }),
+  jobCancel: (jobId: string) => invoke<void>("job_cancel", { jobId }),
+
+  driversRegistry: () => invoke<DriverPackage[]>("drivers_registry"),
+  driverDownload: (id: string) => invoke<string>("driver_download", { id }),
+  envStatus: () => invoke<EnvStatus>("env_status"),
+};
+
+export function uid(): string {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
