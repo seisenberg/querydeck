@@ -4,6 +4,8 @@ import { splitStatements } from "../sqlsplit";
 import { LogEntry, ROW_LIMITS, TabState, limitLabel, useStore } from "../store";
 import SqlEditor from "./SqlEditor";
 import ResultsGrid from "./ResultsGrid";
+import ExportPane from "./ExportPane";
+import { DbIcon, engineOf } from "./DbIcons";
 
 interface Props {
   tab: TabState;
@@ -13,18 +15,21 @@ interface Props {
 export default function QueryTab({ tab }: Props) {
   const profiles = useStore((s) => s.profiles);
   const catalogs = useStore((s) => s.catalogs);
+  const sessions = useStore((s) => s.sessions);
+  const databasesByProfile = useStore((s) => s.databasesByProfile);
   const setTabSql = useStore((s) => s.setTabSql);
-  const setTabProfile = useStore((s) => s.setTabProfile);
+  const setTabDatabase = useStore((s) => s.setTabDatabase);
   const setTabLimit = useStore((s) => s.setTabLimit);
   const setActiveResult = useStore((s) => s.setActiveResult);
   const setBottomTab = useStore((s) => s.setBottomTab);
   const runQuery = useStore((s) => s.runQuery);
   const cancelQuery = useStore((s) => s.cancelQuery);
-  const openConnectionModal = useStore((s) => s.openConnectionModal);
-  const openExport = useStore((s) => s.openExport);
+  const setConnectionPicker = useStore((s) => s.setConnectionPicker);
 
   const profile = profiles.find((p) => p.id === tab.profileId) ?? null;
   const catalog = tab.profileId ? catalogs[tab.profileId] : undefined;
+  const databases = tab.profileId ? (databasesByProfile[tab.profileId] ?? []) : [];
+  const connected = profile ? (sessions[profile.id] ?? 0) > 0 : false;
 
   const schemaNs: SQLNamespace | undefined = useMemo(() => {
     if (!catalog) return undefined;
@@ -35,7 +40,6 @@ export default function QueryTab({ tab }: Props) {
         ns[s.name][t.name] = t.columns.map((c) => c.name);
       }
     }
-    // If there is a single schema, also expose tables at the top level.
     if (catalog.schemas.length === 1) {
       const only = catalog.schemas[0];
       const flat: SQLNamespace = {};
@@ -46,37 +50,48 @@ export default function QueryTab({ tab }: Props) {
   }, [catalog]);
 
   const activeOutcome = tab.results[tab.activeResult];
+  const exportSql = activeOutcome?.kind === "rows" ? fullStatementFor(tab, tab.activeResult) : "";
 
   return (
     <>
       <div className="query-toolbar">
-        <select
-          value={tab.profileId ?? ""}
-          onChange={(e) => setTabProfile(tab.id, e.target.value || null)}
-          style={{ minWidth: 160 }}
-          title="Connection for this tab"
-        >
-          <option value="">— no connection —</option>
-          {profiles.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.driver})
-            </option>
-          ))}
-        </select>
-        <button className="small ghost" onClick={() => openConnectionModal()} title="Add connection">
-          +
-        </button>
+        {profile ? (
+          <span className="conn-label" title={`${profile.name} (${profile.driver})`}>
+            <DbIcon engine={engineOf(profile)} connected={connected} />
+            <span>{profile.name}</span>
+          </span>
+        ) : (
+          <button className="small" onClick={() => setConnectionPicker(true)}>
+            Pick connection…
+          </button>
+        )}
+
+        {profile && databases.length > 0 && (
+          <label>
+            DB{" "}
+            <select
+              value={tab.database ?? defaultDatabase(profile)}
+              onChange={(e) => setTabDatabase(tab.id, e.target.value)}
+              title="Switch database on this connection (reconnects this console)"
+              style={{ maxWidth: 180 }}
+            >
+              {databases.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {tab.running ? (
           <button className="danger" onClick={() => cancelQuery(tab.id)}>
             ■ Cancel
           </button>
         ) : (
-          <>
-            <button className="primary" onClick={() => void runQuery(tab.id)} title="Run everything (⌘⇧⏎)">
-              ▶ Run
-            </button>
-          </>
+          <button className="primary" onClick={() => void runQuery(tab.id)} title="Run everything (⌘⇧⏎)">
+            ▶ Run
+          </button>
         )}
 
         <label>
@@ -95,22 +110,6 @@ export default function QueryTab({ tab }: Props) {
         </label>
 
         <span className="sep" />
-
-        {activeOutcome?.kind === "rows" && profile && (
-          <button
-            className="small"
-            onClick={() =>
-              openExport({
-                profileId: profile.id,
-                sql: fullStatementFor(tab, tab.activeResult),
-                suggestedName: "result",
-              })
-            }
-            title="Re-runs this statement and streams every row to a file (ignores the grid limit)"
-          >
-            Export…
-          </button>
-        )}
         <span className="hint">⌘⏎ statement · ⌘⇧⏎ all</span>
       </div>
 
@@ -137,9 +136,29 @@ export default function QueryTab({ tab }: Props) {
           >
             Log{tab.log.length > 0 ? ` (${tab.log.length})` : ""}
           </button>
+          <button
+            className={`btab ${tab.bottomTab === "export" ? "active" : ""}`}
+            onClick={() => setBottomTab(tab.id, "export")}
+          >
+            Export
+          </button>
         </div>
 
         {tab.bottomTab === "log" && <LogPane entries={tab.log} />}
+
+        {tab.bottomTab === "export" &&
+          (profile ? (
+            <ExportPane
+              profileId={profile.id}
+              sql={exportSql || tab.sql}
+              tableName="result"
+              database={tab.database}
+            />
+          ) : (
+            <div className="placeholder">
+              <div>Pick a connection first.</div>
+            </div>
+          ))}
 
         {tab.bottomTab === "results" && tab.error && (
           <div className="error-box">
@@ -168,8 +187,7 @@ export default function QueryTab({ tab }: Props) {
           </div>
         )}
 
-        {tab.bottomTab === "results" &&
-        activeOutcome ? (
+        {tab.bottomTab === "results" && activeOutcome ? (
           activeOutcome.kind === "rows" ? (
             <>
               <ResultsGrid outcome={activeOutcome} />
@@ -214,6 +232,11 @@ export default function QueryTab({ tab }: Props) {
   );
 }
 
+function defaultDatabase(profile: { params: unknown }): string {
+  const p = profile.params as { database?: string };
+  return p.database ?? "";
+}
+
 function LogPane({ entries }: { entries: LogEntry[] }) {
   if (entries.length === 0) {
     return (
@@ -252,7 +275,6 @@ function LogPane({ entries }: { entries: LogEntry[] }) {
 
 /** Full text of the i-th statement in the tab's script (for export). */
 function fullStatementFor(tab: TabState, idx: number): string {
-  // The preview stored on the outcome may be truncated; re-split the script.
   const outcome = tab.results[idx];
   if (!outcome) return tab.sql;
   return outcome.sql.length < 120

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ConnectionProfile, TableInfo } from "../api";
+import { ConnectionProfile, ConsoleFile, TableInfo } from "../api";
 import { useStore } from "../store";
+import { ConsoleIcon, DbIcon, Expander, TableIcon, ViewIcon, engineOf } from "./DbIcons";
 
 interface CtxMenu {
   x: number;
@@ -11,7 +12,6 @@ interface CtxMenu {
 export default function SchemaTree() {
   const profiles = useStore((s) => s.profiles);
   const openConnectionModal = useStore((s) => s.openConnectionModal);
-  const setDriversModal = useStore((s) => s.setDriversModal);
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
 
   useEffect(() => {
@@ -30,16 +30,6 @@ export default function SchemaTree() {
       <div className="sidebar-header">
         <span>Connections</span>
         <span className="actions">
-          <button
-            className="small ghost"
-            title="Query history (⌘Y)"
-            onClick={() => useStore.getState().setHistoryModal(true)}
-          >
-            ⏱
-          </button>
-          <button className="small ghost" title="Driver manager" onClick={() => setDriversModal(true)}>
-            ⚙
-          </button>
           <button className="small ghost" title="New connection" onClick={() => openConnectionModal()}>
             +
           </button>
@@ -95,33 +85,29 @@ function ProfileNode({
   const openConnectionModal = useStore((s) => s.openConnectionModal);
   const openImport = useStore((s) => s.openImport);
   const addTab = useStore((s) => s.addTab);
-  const showToast = useStore((s) => s.showToast);
+  const sessions = useStore((s) => s.sessions);
+  const disconnectProfile = useStore((s) => s.disconnectProfile);
+
+  const openSessions = sessions[profile.id] ?? 0;
+  const connected = openSessions > 0;
 
   const onContext = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setCtx({
-      x: e.clientX,
-      y: e.clientY,
-      items: [
-        { label: "New console tab", action: () => addTab(profile.id) },
-        { label: "Refresh schema", action: () => void loadCatalog(profile.id, true) },
-        { label: "Import file…", action: () => openImport({ profileId: profile.id }) },
-        { label: "Edit connection…", action: () => openConnectionModal(profile) },
-        {
-          label: "Delete connection",
-          danger: true,
-          action: () => {
-            void import("../api").then(({ api }) =>
-              api
-                .profileDelete(profile.id)
-                .then(() => useStore.getState().loadProfiles())
-                .catch((err) => showToast(String(err))),
-            );
-          },
-        },
-      ],
-    });
+    const items: CtxMenu["items"] = [
+      { label: "New console tab", action: () => addTab(profile.id) },
+      { label: "Refresh schema", action: () => void loadCatalog(profile.id, true) },
+      { label: "Import file…", action: () => openImport({ profileId: profile.id }) },
+      { label: "Edit connection…", action: () => openConnectionModal(profile) },
+    ];
+    // Contextual: only offer disconnect when something is actually online.
+    if (connected) {
+      items.push({
+        label: `Disconnect (${openSessions} session${openSessions === 1 ? "" : "s"})`,
+        action: () => void disconnectProfile(profile.id),
+      });
+    }
+    setCtx({ x: e.clientX, y: e.clientY, items });
   };
 
   return (
@@ -130,31 +116,109 @@ function ProfileNode({
         className="tree-node"
         onClick={() => toggleExpanded(profile.id)}
         onContextMenu={onContext}
-        title={`${profile.name} (${profile.driver})`}
+        title={`${profile.name} (${profile.driver}) — ${connected ? `${openSessions} open session(s)` : "offline"}`}
       >
-        <span className="chev">{expanded ? "▾" : "▸"}</span>
-        <span className="icon">🗄</span>
+        <Expander expanded={!!expanded} />
+        <span className="icon">
+          <DbIcon engine={engineOf(profile)} connected={connected} />
+        </span>
         <span className="label">{profile.name}</span>
         <span className="meta">{profile.driver}</span>
         <span className="spacer" />
         {loading && <span className="spinner" />}
       </div>
-      {expanded && error && (
-        <div className="tree-node" style={{ paddingLeft: 30 }}>
-          <span className="msg-err" style={{ fontSize: 12 }}>
-            {error}
-          </span>
-        </div>
+      {expanded && (
+        <>
+          <ConsolesNode profileId={profile.id} />
+          {error && (
+            <div className="tree-node" style={{ paddingLeft: 30 }}>
+              <span className="msg-err" style={{ fontSize: 12 }}>
+                {error}
+              </span>
+            </div>
+          )}
+          {catalog?.schemas.map((schema) => (
+            <SchemaNode
+              key={schema.name}
+              profileId={profile.id}
+              schemaName={schema.name}
+              tables={schema.tables}
+              setCtx={setCtx}
+            />
+          ))}
+        </>
       )}
-      {expanded &&
-        catalog?.schemas.map((schema) => (
-          <SchemaNode
-            key={schema.name}
-            profileId={profile.id}
-            schemaName={schema.name}
-            tables={schema.tables}
-            setCtx={setCtx}
-          />
+    </>
+  );
+}
+
+/** Logical "Consoles" item: open tabs plus persisted (closed) consoles. */
+function ConsolesNode({ profileId }: { profileId: string }) {
+  const [open, setOpen] = useState(true);
+  const tabs = useStore((s) => s.tabs);
+  const activeTabId = useStore((s) => s.activeTabId);
+  const setActiveTab = useStore((s) => s.setActiveTab);
+  const closed = useStore((s) => s.closedConsoles[profileId] ?? []);
+  const reopenConsole = useStore((s) => s.reopenConsole);
+  const deleteConsole = useStore((s) => s.deleteConsole);
+
+  const live = tabs.filter((t) => t.profileId === profileId);
+  const total = live.length + closed.length;
+
+  return (
+    <>
+      <div className="tree-node" style={{ paddingLeft: 22 }} onClick={() => setOpen(!open)}>
+        <Expander expanded={open} />
+        <span className="icon">🗂</span>
+        <span className="label">Consoles</span>
+        <span className="meta">{total}</span>
+      </div>
+      {open &&
+        live.map((t) => (
+          <div
+            key={t.id}
+            className={`tree-node ${t.id === activeTabId ? "active-console" : ""}`}
+            style={{ paddingLeft: 40 }}
+            onClick={() => setActiveTab(t.id)}
+            title={`${t.title} — open${t.database ? ` · ${t.database}` : ""}`}
+          >
+            <span className="icon">
+              <ConsoleIcon open />
+            </span>
+            <span className="label">{t.title}</span>
+            {t.database && <span className="meta">{t.database}</span>}
+          </div>
+        ))}
+      {open &&
+        closed.map((c) => (
+          <div
+            key={c.id}
+            className="tree-node closed-console"
+            style={{ paddingLeft: 40 }}
+            onClick={() => reopenConsole(c)}
+            title={`${c.title} — closed · click to reopen\n${c.sql.slice(0, 200)}`}
+          >
+            <span className="icon">
+              <ConsoleIcon open={false} />
+            </span>
+            <span className="label">{c.title}</span>
+            {c.database && <span className="meta">{c.database}</span>}
+            <span className="spacer" />
+            <span className="hover-actions">
+              <button
+                className="small ghost danger"
+                title="Delete saved console (removes its log)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (window.confirm(`Delete saved console "${c.title}" and its log?`)) {
+                    void deleteConsole(profileId, c.id);
+                  }
+                }}
+              >
+                ✕
+              </button>
+            </span>
+          </div>
         ))}
     </>
   );
@@ -175,7 +239,7 @@ function SchemaNode({
   return (
     <>
       <div className="tree-node" style={{ paddingLeft: 22 }} onClick={() => setOpen(!open)}>
-        <span className="chev">{open ? "▾" : "▸"}</span>
+        <Expander expanded={open} />
         <span className="icon">▤</span>
         <span className="label">{schemaName}</span>
         <span className="meta">{tables.length}</span>
@@ -213,7 +277,6 @@ function TableNode({
   const profiles = useStore((s) => s.profiles);
 
   const qualified = quoteFor(profiles.find((p) => p.id === profileId)?.driver, schemaName, table.name);
-
   const selectAll = `SELECT * FROM ${qualified}`;
 
   const onDouble = () => {
@@ -234,8 +297,7 @@ function TableNode({
         },
         {
           label: "Export table…",
-          action: () =>
-            openExport({ profileId, sql: selectAll, suggestedName: table.name }),
+          action: () => openExport({ profileId, sql: selectAll, suggestedName: table.name }),
         },
         {
           label: "Import into this table…",
@@ -255,15 +317,18 @@ function TableNode({
         onContextMenu={onContext}
         title={`${table.name} — double-click to open data, right-click for actions`}
       >
-        <span className="chev">{open ? "▾" : "▸"}</span>
-        <span className="icon">{table.kind === "view" ? "👁" : "▦"}</span>
+        <Expander expanded={open} />
+        <span className="icon">{table.kind === "view" || table.kind === "materialized view" ? <ViewIcon /> : <TableIcon />}</span>
         <span className="label">{table.name}</span>
         {table.kind !== "table" && <span className="meta">{table.kind}</span>}
       </div>
       {open &&
         table.columns.map((c) => (
           <div className="tree-node" style={{ paddingLeft: 62, cursor: "default" }} key={c.name}>
-            <span className="icon" style={{ color: table.pk.includes(c.name) ? "var(--warn)" : "var(--text-dim)", fontSize: 10 }}>
+            <span
+              className="icon"
+              style={{ color: table.pk.includes(c.name) ? "var(--warn)" : "var(--text-dim)", fontSize: 10 }}
+            >
               {table.pk.includes(c.name) ? "🔑" : "●"}
             </span>
             <span className="label">{c.name}</span>
@@ -285,3 +350,6 @@ function quoteFor(driver: string | undefined, schema: string, table: string): st
   if (!schema || schema === "main" || schema === "(default)") return part(table);
   return `${part(schema)}.${part(table)}`;
 }
+
+// referenced for tree section typing
+export type { ConsoleFile };

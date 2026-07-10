@@ -85,6 +85,8 @@ pub struct OdbcLib {
     GetDiagRec: unsafe extern "system" fn(i16, Handle, i16, *mut SqlChar, *mut i32, *mut SqlChar, i16, *mut i16) -> SqlReturn,
     Tables: unsafe extern "system" fn(Handle, *const SqlChar, i16, *const SqlChar, i16, *const SqlChar, i16, *const SqlChar, i16) -> SqlReturn,
     Columns: unsafe extern "system" fn(Handle, *const SqlChar, i16, *const SqlChar, i16, *const SqlChar, i16, *const SqlChar, i16) -> SqlReturn,
+    Drivers: unsafe extern "system" fn(Handle, u16, *mut SqlChar, i16, *mut i16, *mut SqlChar, i16, *mut i16) -> SqlReturn,
+    DataSources: unsafe extern "system" fn(Handle, u16, *mut SqlChar, i16, *mut i16, *mut SqlChar, i16, *mut i16) -> SqlReturn,
 }
 
 unsafe impl Send for OdbcLib {}
@@ -150,6 +152,73 @@ pub fn status() -> (bool, String) {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OdbcInventory {
+    /// Installed driver names (usable as `Driver={name};`).
+    pub drivers: Vec<String>,
+    /// Configured DSNs: (name, driver description).
+    pub dsns: Vec<(String, String)>,
+}
+
+const SQL_FETCH_NEXT: u16 = 1;
+const SQL_FETCH_FIRST: u16 = 2;
+
+/// Enumerate installed ODBC drivers and configured data sources.
+pub fn inventory() -> AppResult<OdbcInventory> {
+    let lib = load().map_err(AppError::driver)?;
+    let mut drivers = Vec::new();
+    let mut dsns = Vec::new();
+    unsafe {
+        let mut direction = SQL_FETCH_FIRST;
+        loop {
+            let mut name = vec![0 as SqlChar; 512];
+            let mut attrs = vec![0 as SqlChar; 2048];
+            let (mut name_len, mut attrs_len) = (0i16, 0i16);
+            let r = (lib.Drivers)(
+                lib.env,
+                direction,
+                name.as_mut_ptr(),
+                name.len() as i16,
+                &mut name_len,
+                attrs.as_mut_ptr(),
+                attrs.len() as i16,
+                &mut attrs_len,
+            );
+            if r == SQL_NO_DATA || !ok(r) {
+                break;
+            }
+            drivers.push(decode(&name[..(name_len.max(0) as usize).min(name.len())]));
+            direction = SQL_FETCH_NEXT;
+        }
+
+        let mut direction = SQL_FETCH_FIRST;
+        loop {
+            let mut name = vec![0 as SqlChar; 512];
+            let mut desc = vec![0 as SqlChar; 512];
+            let (mut name_len, mut desc_len) = (0i16, 0i16);
+            let r = (lib.DataSources)(
+                lib.env,
+                direction,
+                name.as_mut_ptr(),
+                name.len() as i16,
+                &mut name_len,
+                desc.as_mut_ptr(),
+                desc.len() as i16,
+                &mut desc_len,
+            );
+            if r == SQL_NO_DATA || !ok(r) {
+                break;
+            }
+            dsns.push((
+                decode(&name[..(name_len.max(0) as usize).min(name.len())]),
+                decode(&desc[..(desc_len.max(0) as usize).min(desc.len())]),
+            ));
+            direction = SQL_FETCH_NEXT;
+        }
+    }
+    Ok(OdbcInventory { drivers, dsns })
+}
+
 impl OdbcLib {
     fn init(lib: Library) -> AppResult<Self> {
         let mut me = Self {
@@ -166,6 +235,8 @@ impl OdbcLib {
             GetDiagRec: sym!(lib, "SQLGetDiagRec")?,
             Tables: sym!(lib, "SQLTables")?,
             Columns: sym!(lib, "SQLColumns")?,
+            Drivers: sym!(lib, "SQLDrivers")?,
+            DataSources: sym!(lib, "SQLDataSources")?,
             env: ptr::null_mut(),
             _lib: lib,
         };

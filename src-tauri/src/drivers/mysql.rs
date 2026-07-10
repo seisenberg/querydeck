@@ -161,6 +161,18 @@ impl DbConnection for MysqlConn {
         Ok(ExecMeta { columns, affected, stopped_early })
     }
 
+    fn list_databases(&mut self) -> AppResult<Vec<String>> {
+        // SHOW DATABASES only lists schemas the user has some privilege on.
+        let rows = self.text_rows("SHOW DATABASES")?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.into_iter().next().flatten())
+            .filter(|d| {
+                !matches!(d.as_str(), "information_schema" | "performance_schema" | "sys")
+            })
+            .collect())
+    }
+
     fn catalog(&mut self) -> AppResult<Catalog> {
         const HIDDEN: &str = "('information_schema','mysql','performance_schema','sys')";
 

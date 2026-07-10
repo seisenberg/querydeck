@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useStore } from "./store";
 import HistoryModal from "./components/HistoryModal";
+import ConnectionPicker from "./components/ConnectionPicker";
+import TunnelsModal from "./components/TunnelsModal";
 import SchemaTree from "./components/SchemaTree";
 import TabBar from "./components/TabBar";
 import QueryTab from "./components/QueryTab";
@@ -23,32 +25,40 @@ export default function App() {
   const driversModal = useStore((s) => s.driversModal);
   const historyModal = useStore((s) => s.historyModal);
   const setHistoryModal = useStore((s) => s.setHistoryModal);
+  const tunnelsModal = useStore((s) => s.tunnelsModal);
+  const setTunnelsModal = useStore((s) => s.setTunnelsModal);
+  const setDriversModal = useStore((s) => s.setDriversModal);
+  const connectionPicker = useStore((s) => s.connectionPicker);
+  const setConnectionPicker = useStore((s) => s.setConnectionPicker);
   const toast = useStore((s) => s.toast);
-  const addTab = useStore((s) => s.addTab);
 
   useEffect(() => {
     void init();
   }, [init]);
 
-  // Native menubar "History → Show Query History…" (also ⌘Y).
+  // Native menubar events: History → ⌘Y, File → SSH Tunnels… / Database Drivers…
   useEffect(() => {
-    const un = listen("open-history", () => setHistoryModal(true));
+    const subs = [
+      listen("open-history", () => setHistoryModal(true)),
+      listen("open-tunnels", () => setTunnelsModal(true)),
+      listen("open-drivers", () => setDriversModal(true)),
+    ];
     return () => {
-      void un.then((f) => f());
+      for (const s of subs) void s.then((f) => f());
     };
-  }, [setHistoryModal]);
+  }, [setHistoryModal, setTunnelsModal, setDriversModal]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "t") {
         e.preventDefault();
-        addTab();
+        setConnectionPicker(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [addTab]);
+  }, [setConnectionPicker]);
 
   return (
     <div className="app">
@@ -77,6 +87,8 @@ export default function App() {
       {exportModal && <ExportDialog target={exportModal} />}
       {driversModal && <DriverManager />}
       {historyModal && <HistoryModal />}
+      {tunnelsModal && <TunnelsModal />}
+      {connectionPicker && <ConnectionPicker />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );

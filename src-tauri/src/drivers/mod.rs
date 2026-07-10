@@ -18,8 +18,31 @@ use crate::value::{ColumnMeta, DbValue};
 pub struct ConnectionProfile {
     pub id: String,
     pub name: String,
+    /// Optional SSH tunnel id (see tunnels.rs) that must be up before
+    /// connecting. The connection itself targets the tunnel's local port.
+    #[serde(rename = "sshTunnel", default, skip_serializing_if = "Option::is_none")]
+    pub ssh_tunnel: Option<String>,
     #[serde(flatten)]
     pub params: DriverParams,
+}
+
+impl ConnectionProfile {
+    /// A copy of this profile pointing at a different database (used by the
+    /// per-tab database switcher). Drivers without a database concept are
+    /// returned unchanged.
+    pub fn with_database(&self, database: Option<&str>) -> ConnectionProfile {
+        let mut p = self.clone();
+        if let Some(db) = database {
+            if !db.is_empty() {
+                match &mut p.params {
+                    DriverParams::Postgres(pg) => pg.database = db.to_string(),
+                    DriverParams::Mysql(my) => my.database = db.to_string(),
+                    _ => {}
+                }
+            }
+        }
+        p
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +195,12 @@ pub trait DbConnection: Send {
     /// Introspect the database structure.
     fn catalog(&mut self) -> AppResult<Catalog>;
 
+    /// Databases the current user may connect to, for the per-tab database
+    /// switcher. Empty = switching not supported for this engine.
+    fn list_databases(&mut self) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     /// Driver-native DDL for a table when the engine can produce it
     /// (e.g. `SHOW CREATE TABLE`, sqlite_master.sql). `None` -> generate
     /// generically from catalog metadata.
@@ -193,8 +222,14 @@ pub trait DbConnection: Send {
     }
 }
 
-/// Open a connection for a profile.
+/// Open a connection for a profile. Brings the profile's SSH tunnel up first
+/// when one is configured.
 pub fn connect(profile: &ConnectionProfile) -> AppResult<Box<dyn DbConnection>> {
+    if let Some(tunnel_id) = &profile.ssh_tunnel {
+        if !tunnel_id.is_empty() {
+            crate::tunnels::ensure(tunnel_id)?;
+        }
+    }
     match &profile.params {
         DriverParams::Sqlite(p) => Ok(Box::new(sqlite::SqliteConn::open(p)?)),
         DriverParams::Postgres(p) => Ok(Box::new(postgres::PostgresConn::open(p)?)),

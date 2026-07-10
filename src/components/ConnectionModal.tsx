@@ -1,13 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   ConnectionProfile,
   DriverKind,
   JdbcParams,
   MysqlParams,
+  OdbcInventory,
   OdbcParams,
   PostgresParams,
   SqliteParams,
+  TunnelConfig,
   api,
   errMessage,
   uid,
@@ -63,16 +65,32 @@ export default function ConnectionModal() {
   const { editing } = useStore((s) => s.connectionModal);
   const closeConnectionModal = useStore((s) => s.closeConnectionModal);
   const loadProfiles = useStore((s) => s.loadProfiles);
+  const loadClosedConsoles = useStore((s) => s.loadClosedConsoles);
   const env = useStore((s) => s.env);
   const setDriversModal = useStore((s) => s.setDriversModal);
+  const setTunnelsModal = useStore((s) => s.setTunnelsModal);
+  const showToast = useStore((s) => s.showToast);
 
   const [driver, setDriver] = useState<DriverKind>(editing?.driver ?? "sqlite");
   const [name, setName] = useState(editing?.name ?? "");
+  const [sshTunnel, setSshTunnel] = useState<string>(editing?.sshTunnel ?? "");
+  const [tunnels, setTunnels] = useState<TunnelConfig[]>([]);
+  const [odbcInv, setOdbcInv] = useState<OdbcInventory | null>(null);
   const [params, setParams] = useState<ConnectionProfile["params"]>(
     editing?.params ?? defaultParams(editing?.driver ?? "sqlite"),
   );
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.tunnelsList().then(setTunnels).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (driver === "odbc" && !odbcInv) {
+      api.odbcInventory().then(setOdbcInv).catch(() => undefined);
+    }
+  }, [driver, odbcInv]);
 
   const profile = useMemo<ConnectionProfile>(
     () => ({
@@ -88,9 +106,33 @@ export default function ConnectionModal() {
               : `${(params as PostgresParams).database ?? ""}@${(params as PostgresParams).host ?? ""}`),
       driver,
       params,
+      sshTunnel: sshTunnel || null,
     }),
-    [editing, name, driver, params],
+    [editing, name, driver, params, sshTunnel],
   );
+
+  const deleteProfile = async () => {
+    if (!editing) return;
+    if (
+      !window.confirm(
+        `Delete connection "${editing.name}"?\n\nThis also deletes its saved consoles and their local query logs/history files. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.profileDelete(editing.id);
+      await loadProfiles();
+      await loadClosedConsoles();
+      closeConnectionModal();
+      showToast(`Connection "${editing.name}" deleted`);
+    } catch (e) {
+      setTestMsg({ ok: false, text: errMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const pickDriver = (k: DriverKind) => {
     setDriver(k);
@@ -133,9 +175,12 @@ export default function ConnectionModal() {
   };
 
   const pickJars = async () => {
+    // Default to the folder QueryDeck downloads driver jars into.
+    const defaultPath = await api.driversDir().catch(() => undefined);
     const files = await openDialog({
       multiple: true,
       title: "Choose driver jar(s)",
+      defaultPath,
       filters: [{ name: "Java archive", extensions: ["jar"] }],
     });
     if (Array.isArray(files) && files.length) {
@@ -282,6 +327,51 @@ export default function ConnectionModal() {
 
             {driver === "odbc" && (
               <>
+                {odbcInv && (odbcInv.drivers.length > 0 || odbcInv.dsns.length > 0) && (
+                  <>
+                    <label>Installed</label>
+                    <div className="form-row-inline">
+                      {odbcInv.drivers.length > 0 && (
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              set({
+                                connection_string: `Driver={${e.target.value}};Server=localhost;Port=;Database=;Uid=;Pwd=;`,
+                              } as never);
+                            }
+                          }}
+                          title="Installed ODBC drivers (from the driver manager)"
+                        >
+                          <option value="">— insert driver… —</option>
+                          {odbcInv.drivers.map((d) => (
+                            <option key={d} value={d}>
+                              {d}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {odbcInv.dsns.length > 0 && (
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              set({ connection_string: `DSN=${e.target.value};` } as never);
+                            }
+                          }}
+                          title="Configured data sources"
+                        >
+                          <option value="">— use DSN… —</option>
+                          {odbcInv.dsns.map(([n, d]) => (
+                            <option key={n} value={n}>
+                              {n} ({d})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  </>
+                )}
                 <label>Connection string</label>
                 <textarea
                   rows={3}
@@ -353,6 +443,35 @@ export default function ConnectionModal() {
                 />
               </>
             )}
+            <label>SSH tunnel</label>
+            <div className="form-row-inline">
+              <select value={sshTunnel} onChange={(e) => setSshTunnel(e.target.value)}>
+                <option value="">— none —</option>
+                {tunnels.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name || t.sshHost} (127.0.0.1:{t.localPort} → {t.remoteHost}:{t.remotePort})
+                  </option>
+                ))}
+              </select>
+              <button
+                className="small"
+                onClick={() => {
+                  setTunnelsModal(true);
+                }}
+                title="Manage SSH tunnels"
+              >
+                Manage…
+              </button>
+            </div>
+            {sshTunnel && (
+              <>
+                <label />
+                <span className="hint">
+                  The tunnel is started automatically before connecting — point host/port (or
+                  URL/connection string) at the tunnel's local port.
+                </span>
+              </>
+            )}
           </div>
 
           {driver === "odbc" && env && !env.odbcAvailable && (
@@ -376,6 +495,11 @@ export default function ConnectionModal() {
           <button onClick={() => void test()} disabled={busy}>
             {busy ? "…" : "Test connection"}
           </button>
+          {editing && (
+            <button className="danger" onClick={() => void deleteProfile()} disabled={busy}>
+              Delete…
+            </button>
+          )}
           <span className="sep" />
           <button onClick={closeConnectionModal}>Cancel</button>
           <button className="primary" onClick={() => void save()} disabled={busy}>

@@ -1,4 +1,5 @@
 mod catalog;
+mod consoles;
 mod ddl;
 mod drivers;
 mod error;
@@ -7,6 +8,7 @@ mod registry;
 mod sqlsplit;
 mod state;
 mod transfer;
+mod tunnels;
 mod value;
 
 /// Re-exports for integration tests.
@@ -66,7 +68,43 @@ async fn profile_delete(state: State<'_, Arc<AppState>>, profile_id: String) -> 
     tauri::async_runtime::spawn_blocking(move || {
         state.close_profile_sessions(&profile_id);
         state.profiles.lock().retain(|p| p.id != profile_id);
+        // Deleting a connection also removes its local console files and
+        // history entries.
+        let _ = consoles::delete_all(&profile_id);
+        let _ = history::purge_profile(&profile_id);
         state.save_profiles()
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn profile_disconnect(
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+) -> AppResult<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.close_profile_sessions(&profile_id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+fn sessions_count(state: State<'_, Arc<AppState>>) -> HashMap<String, usize> {
+    state.sessions_count()
+}
+
+#[tauri::command]
+async fn databases_list(
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+) -> AppResult<Vec<String>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.with_conn(&profile_id, "meta", None, |conn| conn.list_databases())
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
@@ -116,6 +154,32 @@ struct RunResponse {
     total_elapsed_ms: u64,
 }
 
+/// True when an execution error smells like a dead/broken connection (server
+/// restarted, idle timeout, network drop) rather than a SQL problem.
+fn is_connection_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    [
+        "connection closed",
+        "connection reset",
+        "connection refused",
+        "broken pipe",
+        "server has gone away",
+        "communication link failure",
+        "connection is closed",
+        "terminating connection",
+        "unexpected eof",
+        "connection unexpectedly",
+        "no connection to the server",
+        "i/o error",
+        "socket",
+        "08s01",
+        "57p01",
+        "epipe",
+    ]
+    .iter()
+    .any(|p| m.contains(p))
+}
+
 #[tauri::command]
 async fn query_run(
     state: State<'_, Arc<AppState>>,
@@ -123,6 +187,7 @@ async fn query_run(
     tab_id: String,
     sql: String,
     max_rows: usize,
+    database: Option<String>,
 ) -> AppResult<RunResponse> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -148,30 +213,50 @@ async fn query_run(
         let mut run_error: Option<RunError> = None;
         let mut history_entries: Vec<history::HistoryEntry> = Vec::new();
 
+        let mut reconnect_used = false;
         for (idx, stmt) in statements.iter().enumerate() {
             let stmt_start = std::time::Instant::now();
             let mut columns: Vec<ColumnMeta> = Vec::new();
             let mut rows: Vec<Vec<DbValue>> = Vec::new();
 
-            let exec = state.with_conn(&profile_id, &tab_id, |conn| {
-                let mut on_event = |ev: RowEvent| -> ControlFlow<()> {
-                    match ev {
-                        RowEvent::Columns(c) => {
-                            columns = c;
-                            ControlFlow::Continue(())
-                        }
-                        RowEvent::Row(r) => {
-                            rows.push(r);
-                            if max_rows > 0 && rows.len() >= max_rows {
-                                ControlFlow::Break(())
-                            } else {
+            let db = database.as_deref();
+            let run_once = |columns: &mut Vec<ColumnMeta>, rows: &mut Vec<Vec<DbValue>>| {
+                state.with_conn(&profile_id, &tab_id, db, |conn| {
+                    let mut on_event = |ev: RowEvent| -> ControlFlow<()> {
+                        match ev {
+                            RowEvent::Columns(c) => {
+                                *columns = c;
                                 ControlFlow::Continue(())
                             }
+                            RowEvent::Row(r) => {
+                                rows.push(r);
+                                if max_rows > 0 && rows.len() >= max_rows {
+                                    ControlFlow::Break(())
+                                } else {
+                                    ControlFlow::Continue(())
+                                }
+                            }
                         }
-                    }
-                };
-                conn.execute(&stmt.sql, &flag, &mut on_event)
-            });
+                    };
+                    conn.execute(&stmt.sql, &flag, &mut on_event)
+                })
+            };
+
+            let mut exec = run_once(&mut columns, &mut rows);
+            // Mixed state: we hold a session but the server dropped it.
+            // Reset the session and retry the statement once.
+            if let Err(e) = &exec {
+                if e.kind != error::ErrorKind::Cancelled
+                    && !reconnect_used
+                    && is_connection_error(&e.message)
+                {
+                    reconnect_used = true;
+                    state.reset_session(&profile_id, &tab_id);
+                    columns.clear();
+                    rows.clear();
+                    exec = run_once(&mut columns, &mut rows);
+                }
+            }
 
             let elapsed_ms = stmt_start.elapsed().as_millis() as u64;
             let preview: String = stmt.sql.chars().take(120).collect();
@@ -333,7 +418,7 @@ async fn catalog_get(
     let state = state.inner().clone();
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cat = state.with_conn(&profile_id, "meta", |conn| conn.catalog())?;
+        let cat = state.with_conn(&profile_id, "meta", None, |conn| conn.catalog())?;
         cache.0.lock().insert(profile_id, cat.clone());
         Ok(cat)
     })
@@ -359,7 +444,7 @@ async fn ddl_get(
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let native =
-            state.with_conn(&profile_id, "meta", |conn| conn.native_ddl(&schema, &table))?;
+            state.with_conn(&profile_id, "meta", None, |conn| conn.native_ddl(&schema, &table))?;
         if let Some(ddl) = native {
             return Ok(DdlResponse {
                 ddl: format!("{}{}", ddl::ddl_comment(true), ddl),
@@ -367,14 +452,14 @@ async fn ddl_get(
             });
         }
         // Generate from catalog metadata (cached, or refreshed on miss).
-        let dialect = state.with_conn(&profile_id, "meta", |conn| Ok(conn.dialect()))?;
+        let dialect = state.with_conn(&profile_id, "meta", None, |conn| Ok(conn.dialect()))?;
         let mut cat = cache.0.lock().get(&profile_id).cloned();
         if cat
             .as_ref()
             .map(|c| find_table(c, &schema, &table).is_none())
             .unwrap_or(true)
         {
-            let fresh = state.with_conn(&profile_id, "meta", |conn| conn.catalog())?;
+            let fresh = state.with_conn(&profile_id, "meta", None, |conn| conn.catalog())?;
             cache.0.lock().insert(profile_id.clone(), fresh.clone());
             cat = Some(fresh);
         }
@@ -435,7 +520,7 @@ async fn import_run(
         flag.store(false, Ordering::Relaxed);
         let tab = format!("job:{}", req.job_id);
         let result =
-            state.with_conn(&req.profile_id, &tab, |conn| {
+            state.with_conn(&req.profile_id, &tab, None, |conn| {
                 transfer::import_run(&app, conn, &req, &flag)
             });
         state.close_session(&req.profile_id, &tab);
@@ -463,7 +548,7 @@ async fn export_run(
         flag.store(false, Ordering::Relaxed);
         let tab = format!("job:{}", req.job_id);
         let result =
-            state.with_conn(&req.profile_id, &tab, |conn| {
+            state.with_conn(&req.profile_id, &tab, req.database.as_deref(), |conn| {
                 transfer::export_run(&app, conn, &req, &flag)
             });
         state.close_session(&req.profile_id, &tab);
@@ -503,6 +588,63 @@ async fn history_clear() -> AppResult<()> {
         .map_err(|e| AppError::internal(e.to_string()))?
 }
 
+// ---------------------------------------------------------------- consoles --
+
+#[tauri::command]
+async fn console_save(console: consoles::ConsoleFile) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || consoles::save(&console))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn console_list(profile_id: Option<String>) -> AppResult<Vec<consoles::ConsoleFile>> {
+    tauri::async_runtime::spawn_blocking(move || consoles::list(profile_id.as_deref()))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn console_delete(profile_id: String, console_id: String) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || consoles::delete(&profile_id, &console_id))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+// ----------------------------------------------------------------- tunnels --
+
+#[tauri::command]
+fn tunnels_list() -> Vec<tunnels::TunnelConfig> {
+    tunnels::list()
+}
+
+#[tauri::command]
+fn tunnel_save(tunnel: tunnels::TunnelConfig) -> AppResult<()> {
+    tunnels::save(tunnel)
+}
+
+#[tauri::command]
+fn tunnel_delete(id: String) -> AppResult<()> {
+    tunnels::delete(&id)
+}
+
+#[tauri::command]
+async fn tunnel_start(id: String) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || tunnels::ensure(&id))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+fn tunnel_stop(id: String) {
+    tunnels::stop(&id);
+}
+
+#[tauri::command]
+fn tunnels_status() -> Vec<tunnels::TunnelStatus> {
+    tunnels::status()
+}
+
 // ---------------------------------------------------------------- registry --
 
 #[tauri::command]
@@ -536,6 +678,20 @@ fn env_status() -> EnvStatus {
     EnvStatus { odbc_available, odbc_detail, jvm_available, jvm_detail }
 }
 
+#[tauri::command]
+async fn odbc_inventory() -> AppResult<drivers::odbc::OdbcInventory> {
+    tauri::async_runtime::spawn_blocking(drivers::odbc::inventory)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+fn drivers_dir() -> String {
+    let dir = AppState::drivers_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().into_owned()
+}
+
 // --------------------------------------------------------------------- run --
 
 pub fn run() {
@@ -547,18 +703,51 @@ pub fn run() {
         .manage(state)
         .manage(Arc::new(CatalogCache::default()))
         .setup(|app| {
-            use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
+            use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem, SubmenuBuilder};
             let show_history = MenuItemBuilder::with_id("show-history", "Show Query History…")
                 .accelerator("CmdOrCtrl+Y")
                 .build(app)?;
             let history_menu = SubmenuBuilder::new(app, "History").item(&show_history).build()?;
+
             let menu = Menu::default(app.handle())?;
-            menu.append(&history_menu)?;
+            // Default order is App, File, Edit, View, Window, Help.
+            // Requested order: File, Edit, View, History, Window, Help —
+            // insert History right before Window.
+            let items = menu.items()?;
+            let window_pos = items
+                .iter()
+                .position(|i| matches!(i, MenuItemKind::Submenu(s) if s.text().ok().as_deref() == Some("Window")))
+                .unwrap_or(items.len());
+            menu.insert(&history_menu, window_pos)?;
+
+            // Tunnels & drivers live under File (sidebar buttons were removed).
+            if let Some(MenuItemKind::Submenu(file_menu)) = items
+                .iter()
+                .find(|i| matches!(i, MenuItemKind::Submenu(s) if s.text().ok().as_deref() == Some("File")))
+            {
+                let tunnels_item =
+                    MenuItemBuilder::with_id("show-tunnels", "SSH Tunnels…").build(app)?;
+                let drivers_item =
+                    MenuItemBuilder::with_id("show-drivers", "Database Drivers…").build(app)?;
+                file_menu.append(&PredefinedMenuItem::separator(app)?)?;
+                file_menu.append(&tunnels_item)?;
+                file_menu.append(&drivers_item)?;
+            }
+
             app.set_menu(menu)?;
             app.on_menu_event(|app, event| {
-                if event.id() == "show-history" {
-                    use tauri::Emitter;
-                    let _ = app.emit("open-history", ());
+                use tauri::Emitter;
+                match event.id().as_ref() {
+                    "show-history" => {
+                        let _ = app.emit("open-history", ());
+                    }
+                    "show-tunnels" => {
+                        let _ = app.emit("open-tunnels", ());
+                    }
+                    "show-drivers" => {
+                        let _ = app.emit("open-drivers", ());
+                    }
+                    _ => {}
                 }
             });
             Ok(())
@@ -583,8 +772,27 @@ pub fn run() {
             driver_download,
             env_status,
             history_list,
-            history_clear
+            history_clear,
+            profile_disconnect,
+            sessions_count,
+            databases_list,
+            console_save,
+            console_list,
+            console_delete,
+            tunnels_list,
+            tunnel_save,
+            tunnel_delete,
+            tunnel_start,
+            tunnel_stop,
+            tunnels_status,
+            odbc_inventory,
+            drivers_dir
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                tunnels::stop_all();
+            }
+        });
 }

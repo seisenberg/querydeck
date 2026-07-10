@@ -48,6 +48,8 @@ export interface ConnectionProfile {
   name: string;
   driver: DriverKind;
   params: DriverParams;
+  /** Optional SSH tunnel id that is brought up before connecting. */
+  sshTunnel?: string | null;
 }
 
 export interface ColumnMeta {
@@ -143,11 +145,48 @@ export interface ExportRequest {
   profileId: string;
   jobId: string;
   sql: string;
-  format: "csv" | "tsv" | "json" | "sql";
+  format: "csv" | "tsv" | "json" | "sql" | "xlsx";
   path: string;
   includeHeader: boolean;
   limit: number;
   tableName: string;
+  database?: string | null;
+  includeCreate?: boolean;
+  insertStyle?: "single" | "multiline";
+  batchLimit?: number;
+}
+
+export interface ConsoleFile {
+  id: string;
+  title: string;
+  profileId: string;
+  database?: string | null;
+  sql: string;
+  log: unknown[];
+  updatedAt: string;
+  closed: boolean;
+}
+
+export interface TunnelConfig {
+  id: string;
+  name: string;
+  sshHost: string;
+  sshPort: number;
+  sshUser: string;
+  keyPath?: string | null;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+}
+
+export interface TunnelStatus {
+  id: string;
+  running: boolean;
+}
+
+export interface OdbcInventory {
+  drivers: string[];
+  dsns: [string, string][];
 }
 
 export interface ExportResult {
@@ -211,8 +250,20 @@ export const api = {
   connectionTest: (profile: ConnectionProfile) =>
     invoke<string>("connection_test", { profile }),
 
-  queryRun: (profileId: string, tabId: string, sql: string, maxRows: number) =>
-    invoke<RunResponse>("query_run", { profileId, tabId, sql, maxRows }),
+  queryRun: (
+    profileId: string,
+    tabId: string,
+    sql: string,
+    maxRows: number,
+    database?: string | null,
+  ) =>
+    invoke<RunResponse>("query_run", {
+      profileId,
+      tabId,
+      sql,
+      maxRows,
+      database: database || null,
+    }),
   queryCancel: (profileId: string, tabId: string) =>
     invoke<void>("query_cancel", { profileId, tabId }),
   pageFetch: (resultId: number, offset: number, limit: number) =>
@@ -248,6 +299,28 @@ export const api = {
       profileId: profileId || null,
     }),
   historyClear: () => invoke<void>("history_clear"),
+
+  profileDisconnect: (profileId: string) =>
+    invoke<void>("profile_disconnect", { profileId }),
+  sessionsCount: () => invoke<Record<string, number>>("sessions_count"),
+  databasesList: (profileId: string) =>
+    invoke<string[]>("databases_list", { profileId }),
+
+  consoleSave: (console: ConsoleFile) => invoke<void>("console_save", { console }),
+  consoleList: (profileId?: string) =>
+    invoke<ConsoleFile[]>("console_list", { profileId: profileId || null }),
+  consoleDelete: (profileId: string, consoleId: string) =>
+    invoke<void>("console_delete", { profileId, consoleId }),
+
+  tunnelsList: () => invoke<TunnelConfig[]>("tunnels_list"),
+  tunnelSave: (tunnel: TunnelConfig) => invoke<void>("tunnel_save", { tunnel }),
+  tunnelDelete: (id: string) => invoke<void>("tunnel_delete", { id }),
+  tunnelStart: (id: string) => invoke<void>("tunnel_start", { id }),
+  tunnelStop: (id: string) => invoke<void>("tunnel_stop", { id }),
+  tunnelsStatus: () => invoke<TunnelStatus[]>("tunnels_status"),
+
+  odbcInventory: () => invoke<OdbcInventory>("odbc_inventory"),
+  driversDir: () => invoke<string>("drivers_dir"),
 };
 
 export function uid(): string {

@@ -4,6 +4,7 @@ import {
   api,
   Catalog,
   ConnectionProfile,
+  ConsoleFile,
   EnvStatus,
   RunError,
   StatementOutcome,
@@ -26,6 +27,8 @@ export interface TabState {
   id: string;
   title: string;
   profileId: string | null;
+  /** Per-tab database override (same connection, different DB). */
+  database: string | null;
   sql: string;
   running: boolean;
   results: StatementOutcome[];
@@ -37,7 +40,7 @@ export interface TabState {
   sqlEpoch: number;
   /** per-console execution log, newest first */
   log: LogEntry[];
-  bottomTab: "results" | "log";
+  bottomTab: "results" | "log" | "export";
 }
 
 export interface DdlTarget {
@@ -71,6 +74,12 @@ interface Store {
   catalogErrors: Record<string, string>;
   expandedProfiles: Record<string, boolean>;
   env: EnvStatus | null;
+  /** Databases available per profile (for the per-tab database switcher). */
+  databasesByProfile: Record<string, string[]>;
+  /** Open session counts per profile (for connection-state icons). */
+  sessions: Record<string, number>;
+  /** Saved (closed) consoles per profile, from the local filesystem. */
+  closedConsoles: Record<string, ConsoleFile[]>;
 
   tabs: TabState[];
   activeTabId: string;
@@ -82,21 +91,30 @@ interface Store {
   exportModal: ExportTarget | null;
   driversModal: boolean;
   historyModal: boolean;
+  tunnelsModal: boolean;
+  connectionPicker: boolean;
   toast: string | null;
 
   init(): Promise<void>;
   loadProfiles(): Promise<void>;
   loadCatalog(profileId: string, refresh?: boolean): Promise<void>;
   toggleExpanded(profileId: string): void;
+  loadDatabases(profileId: string): Promise<void>;
+  refreshSessions(): Promise<void>;
+  loadClosedConsoles(): Promise<void>;
+  disconnectProfile(profileId: string): Promise<void>;
 
   addTab(profileId?: string | null, sql?: string, autorun?: boolean): string;
   closeTab(id: string): void;
+  reopenConsole(file: ConsoleFile): void;
+  deleteConsole(profileId: string, consoleId: string): Promise<void>;
   setActiveTab(id: string): void;
   setTabSql(id: string, sql: string): void;
   setTabProfile(id: string, profileId: string | null): void;
+  setTabDatabase(id: string, database: string | null): void;
   setTabLimit(id: string, maxRows: number): void;
   setActiveResult(id: string, idx: number): void;
-  setBottomTab(id: string, tab: "results" | "log"): void;
+  setBottomTab(id: string, tab: "results" | "log" | "export"): void;
   runQuery(tabId: string, sqlOverride?: string): Promise<void>;
   cancelQuery(tabId: string): void;
 
@@ -107,6 +125,8 @@ interface Store {
   openExport(t: ExportTarget): void;
   setDriversModal(open: boolean): void;
   setHistoryModal(open: boolean): void;
+  setTunnelsModal(open: boolean): void;
+  setConnectionPicker(open: boolean): void;
   closeModals(): void;
   showToast(msg: string): void;
 }
@@ -119,6 +139,7 @@ function newTab(profileId: string | null, sql = ""): TabState {
     id: uid(),
     title: `console ${tabCounter}`,
     profileId,
+    database: null,
     sql,
     running: false,
     results: [],
@@ -152,6 +173,9 @@ export const useStore = create<Store>((set, get) => {
     catalogErrors: {},
     expandedProfiles: {},
     env: null,
+    databasesByProfile: {},
+    sessions: {},
+    closedConsoles: {},
 
     tabs: [first],
     activeTabId: first.id,
@@ -162,15 +186,62 @@ export const useStore = create<Store>((set, get) => {
     exportModal: null,
     driversModal: false,
     historyModal: false,
+    tunnelsModal: false,
+    connectionPicker: false,
     toast: null,
 
     async init() {
       await get().loadProfiles();
+      void get().loadClosedConsoles();
+      void get().refreshSessions();
       try {
         set({ env: await api.envStatus() });
       } catch {
         // env status is informational only
       }
+    },
+
+    async loadDatabases(profileId) {
+      try {
+        const dbs = await api.databasesList(profileId);
+        set((s) => ({
+          databasesByProfile: { ...s.databasesByProfile, [profileId]: dbs },
+        }));
+        void get().refreshSessions();
+      } catch {
+        // switching just stays unavailable for this profile
+      }
+    },
+
+    async refreshSessions() {
+      try {
+        set({ sessions: await api.sessionsCount() });
+      } catch {
+        /* informational */
+      }
+    },
+
+    async loadClosedConsoles() {
+      try {
+        const all = await api.consoleList();
+        const grouped: Record<string, ConsoleFile[]> = {};
+        for (const c of all) {
+          if (!c.closed) continue;
+          (grouped[c.profileId] ??= []).push(c);
+        }
+        set({ closedConsoles: grouped });
+      } catch {
+        /* tree section just stays empty */
+      }
+    },
+
+    async disconnectProfile(profileId) {
+      try {
+        await api.profileDisconnect(profileId);
+      } catch (e) {
+        get().showToast(errMessage(e));
+      }
+      void get().refreshSessions();
     },
 
     async loadProfiles() {
@@ -215,6 +286,9 @@ export const useStore = create<Store>((set, get) => {
       const active = s0.tabs.find((t) => t.id === s0.activeTabId);
       const t = newTab(profileId ?? active?.profileId ?? null, sql);
       set((s) => ({ tabs: [...s.tabs, t], activeTabId: t.id }));
+      if (t.profileId) {
+        void get().loadDatabases(t.profileId);
+      }
       if (autorun && profileId) {
         void get().runQuery(t.id);
       }
@@ -231,11 +305,59 @@ export const useStore = create<Store>((set, get) => {
       if (ids.length) void api.resultsFree(ids);
       if (tab.profileId) void api.sessionClose(tab.profileId, tab.id);
 
+      // Closing does not delete the console: persist it (sql + log) so it
+      // stays under the connection in the tree and can be reopened.
+      if (tab.profileId && (tab.sql.trim() || tab.log.length)) {
+        void api
+          .consoleSave(consoleFileFor(tab, true))
+          .then(() => get().loadClosedConsoles())
+          .catch(() => undefined);
+      }
+
       const remaining = s.tabs.filter((t) => t.id !== id);
       const tabs = remaining.length ? remaining : [newTab(tab.profileId)];
       const activeTabId =
         s.activeTabId === id ? tabs[Math.max(0, s.tabs.findIndex((t) => t.id === id) - 1)].id : s.activeTabId;
       set({ tabs, activeTabId });
+      void get().refreshSessions();
+    },
+
+    reopenConsole(file) {
+      const s = get();
+      const already = s.tabs.find((t) => t.id === file.id);
+      if (already) {
+        set({ activeTabId: already.id });
+        return;
+      }
+      tabCounter += 1;
+      const t: TabState = {
+        ...newTab(file.profileId, file.sql),
+        id: file.id,
+        title: file.title,
+        database: file.database ?? null,
+        log: (file.log as LogEntry[]) ?? [],
+      };
+      set((st) => ({
+        tabs: [...st.tabs, t],
+        activeTabId: t.id,
+        closedConsoles: {
+          ...st.closedConsoles,
+          [file.profileId]: (st.closedConsoles[file.profileId] ?? []).filter(
+            (c) => c.id !== file.id,
+          ),
+        },
+      }));
+      void api.consoleSave({ ...file, closed: false }).catch(() => undefined);
+      void get().loadDatabases(file.profileId);
+    },
+
+    async deleteConsole(profileId, consoleId) {
+      try {
+        await api.consoleDelete(profileId, consoleId);
+      } catch (e) {
+        get().showToast(errMessage(e));
+      }
+      void get().loadClosedConsoles();
     },
 
     setActiveTab(id) {
@@ -254,9 +376,22 @@ export const useStore = create<Store>((set, get) => {
         void api.sessionClose(tab.profileId, tab.id);
       }
       set((s) => ({
-        tabs: s.tabs.map((t) => (t.id === id ? { ...t, profileId } : t)),
+        tabs: s.tabs.map((t) => (t.id === id ? { ...t, profileId, database: null } : t)),
       }));
       if (profileId && !get().catalogs[profileId]) void get().loadCatalog(profileId);
+      if (profileId) void get().loadDatabases(profileId);
+    },
+
+    setTabDatabase(id, database) {
+      const tab = get().tabs.find((t) => t.id === id);
+      if (!tab || tab.database === database) return;
+      // The session is bound to a database at connect time; close it so the
+      // next run reconnects against the newly selected database.
+      if (tab.profileId) void api.sessionClose(tab.profileId, tab.id);
+      set((s) => ({
+        tabs: s.tabs.map((t) => (t.id === id ? { ...t, database } : t)),
+      }));
+      void get().refreshSessions();
     },
 
     setTabLimit(id, maxRows) {
@@ -319,7 +454,7 @@ export const useStore = create<Store>((set, get) => {
         [...entries, ...t.log.filter((l) => l.id !== runLogId)].slice(0, MAX_LOG_ENTRIES);
 
       try {
-        const res = await api.queryRun(tab.profileId, tab.id, sql, tab.maxRows);
+        const res = await api.queryRun(tab.profileId, tab.id, sql, tab.maxRows, tab.database);
         // One finished entry per statement (newest first), plus the error if any.
         const entries: LogEntry[] = res.statements.map((st) => ({
           id: uid(),
@@ -356,6 +491,13 @@ export const useStore = create<Store>((set, get) => {
               : t,
           ),
         }));
+        void get().refreshSessions();
+        const done = get().tabs.find((t) => t.id === tabId);
+        if (done?.profileId) {
+          void api.consoleSave(consoleFileFor(done, false)).catch(() => undefined);
+          // Keep the database switcher fresh (e.g. after CREATE DATABASE).
+          void get().loadDatabases(done.profileId);
+        }
       } catch (e) {
         const message = errMessage(e);
         set((s) => ({
@@ -408,6 +550,12 @@ export const useStore = create<Store>((set, get) => {
     setHistoryModal(open) {
       set({ historyModal: open });
     },
+    setTunnelsModal(open) {
+      set({ tunnelsModal: open });
+    },
+    setConnectionPicker(open) {
+      set({ connectionPicker: open });
+    },
     closeModals() {
       set({
         ddlModal: null,
@@ -415,6 +563,8 @@ export const useStore = create<Store>((set, get) => {
         exportModal: null,
         driversModal: false,
         historyModal: false,
+        tunnelsModal: false,
+        connectionPicker: false,
       });
     },
     showToast(msg) {
@@ -434,4 +584,18 @@ function pickActiveResult(statements: StatementOutcome[]): number {
 /** Text of the statement that failed (for the log entry). */
 function splitStatementsForLog(script: string, statementIndex: number): string {
   return splitStatements(script)[statementIndex]?.sql ?? script;
+}
+
+/** Snapshot of a tab as a persistable console file. */
+function consoleFileFor(tab: TabState, closed: boolean): ConsoleFile {
+  return {
+    id: tab.id,
+    title: tab.title,
+    profileId: tab.profileId ?? "",
+    database: tab.database,
+    sql: tab.sql,
+    log: tab.log,
+    updatedAt: new Date().toISOString().replace("T", " ").slice(0, 19),
+    closed,
+  };
 }

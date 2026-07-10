@@ -370,7 +370,7 @@ pub struct ExportRequest {
     #[serde(rename = "jobId")]
     pub job_id: String,
     pub sql: String,
-    /// "csv" | "tsv" | "json" | "sql"
+    /// "csv" | "tsv" | "json" | "sql" | "xlsx"
     pub format: String,
     pub path: String,
     #[serde(rename = "includeHeader", default = "default_true")]
@@ -378,9 +378,26 @@ pub struct ExportRequest {
     /// Row cap; 0 = everything.
     #[serde(default)]
     pub limit: usize,
-    /// Target table name used for INSERT statements in sql format.
+    /// Target table name used for INSERT/CREATE statements in sql format.
     #[serde(rename = "tableName", default)]
     pub table_name: String,
+    /// Per-tab database override so the export runs against the same
+    /// database the console is pointed at.
+    #[serde(default)]
+    pub database: Option<String>,
+    /// sql format: emit a CREATE TABLE statement first.
+    #[serde(rename = "includeCreate", default)]
+    pub include_create: bool,
+    /// sql format: "single" (one INSERT per row) | "multiline" (multi-row VALUES).
+    #[serde(rename = "insertStyle", default = "default_insert_style")]
+    pub insert_style: String,
+    /// sql multiline: start a new INSERT every N rows (0 = one statement).
+    #[serde(rename = "batchLimit", default)]
+    pub batch_limit: usize,
+}
+
+fn default_insert_style() -> String {
+    "single".into()
 }
 
 #[derive(Debug, Serialize)]
@@ -394,7 +411,22 @@ pub struct ExportResult {
 enum ExportSink {
     Csv { w: csv::Writer<BufWriter<File>>, include_header: bool },
     Json { w: BufWriter<File>, first: bool },
-    Sql { w: BufWriter<File>, dialect: Dialect, table: String, col_list: String },
+    Sql {
+        w: BufWriter<File>,
+        dialect: Dialect,
+        table: String,
+        col_list: String,
+        include_create: bool,
+        multiline: bool,
+        batch_limit: usize,
+        rows_in_batch: usize,
+    },
+    Xlsx {
+        workbook: rust_xlsxwriter::Workbook,
+        path: String,
+        include_header: bool,
+        row: u32,
+    },
 }
 
 impl ExportSink {
@@ -409,26 +441,48 @@ impl ExportSink {
             ExportSink::Json { w, .. } => {
                 w.write_all(b"[")?;
             }
-            ExportSink::Sql { dialect, table, col_list, .. } => {
+            ExportSink::Sql { w, dialect, table, col_list, include_create, .. } => {
                 let names: Vec<String> =
                     cols.iter().map(|c| dialect.quote_ident(&c.name)).collect();
                 *col_list = names.join(", ");
-                let _ = table;
+                if *include_create {
+                    let col_defs: Vec<String> = cols
+                        .iter()
+                        .map(|c| {
+                            let ty = if c.type_name.trim().is_empty() {
+                                "TEXT"
+                            } else {
+                                c.type_name.as_str()
+                            };
+                            format!("    {} {}", dialect.quote_ident(&c.name), ty)
+                        })
+                        .collect();
+                    writeln!(w, "CREATE TABLE {table} (\n{}\n);\n", col_defs.join(",\n"))?;
+                }
+            }
+            ExportSink::Xlsx { workbook, include_header, row, .. } => {
+                if *include_header {
+                    let ws = workbook.worksheet_from_index(0).map_err(std::io::Error::other)?;
+                    for (i, c) in cols.iter().enumerate() {
+                        ws.write_string(*row, i as u16, &c.name).map_err(std::io::Error::other)?;
+                    }
+                    *row += 1;
+                }
             }
         }
         Ok(())
     }
 
-    fn row(&mut self, row: &[DbValue], cols: &[ColumnMeta]) -> std::io::Result<()> {
+    fn row(&mut self, values: &[DbValue], cols: &[ColumnMeta]) -> std::io::Result<()> {
         match self {
             ExportSink::Csv { w, .. } => {
-                w.write_record(row.iter().map(|v| v.as_text()))
+                w.write_record(values.iter().map(|v| v.as_text()))
                     .map_err(std::io::Error::other)?;
             }
             ExportSink::Json { w, first } => {
                 let obj: serde_json::Map<String, serde_json::Value> = cols
                     .iter()
-                    .zip(row.iter())
+                    .zip(values.iter())
                     .map(|(c, v)| (c.name.clone(), serde_json::to_value(v).unwrap_or_default()))
                     .collect();
                 let sep: &[u8] = if *first { b"\n  " } else { b",\n  " };
@@ -436,9 +490,64 @@ impl ExportSink {
                 w.write_all(sep)?;
                 serde_json::to_writer(&mut *w, &obj).map_err(std::io::Error::other)?;
             }
-            ExportSink::Sql { w, dialect, table, col_list } => {
-                let vals: Vec<String> = row.iter().map(|v| dialect.literal(v)).collect();
-                writeln!(w, "INSERT INTO {table} ({col_list}) VALUES ({});", vals.join(", "))?;
+            ExportSink::Sql {
+                w,
+                dialect,
+                table,
+                col_list,
+                multiline,
+                batch_limit,
+                rows_in_batch,
+                ..
+            } => {
+                let vals: Vec<String> = values.iter().map(|v| dialect.literal(v)).collect();
+                let tuple = format!("({})", vals.join(", "));
+                if !*multiline {
+                    writeln!(w, "INSERT INTO {table} ({col_list}) VALUES {tuple};")?;
+                } else {
+                    if *rows_in_batch == 0 {
+                        write!(w, "INSERT INTO {table} ({col_list}) VALUES\n{tuple}")?;
+                    } else {
+                        write!(w, ",\n{tuple}")?;
+                    }
+                    *rows_in_batch += 1;
+                    if *batch_limit > 0 && *rows_in_batch >= *batch_limit {
+                        w.write_all(b";\n\n")?;
+                        *rows_in_batch = 0;
+                    }
+                }
+            }
+            ExportSink::Xlsx { workbook, row, .. } => {
+                let ws = workbook.worksheet_from_index(0).map_err(std::io::Error::other)?;
+                for (i, v) in values.iter().enumerate() {
+                    let col = i as u16;
+                    match v {
+                        DbValue::Null => {}
+                        DbValue::Bool(b) => {
+                            ws.write_boolean(*row, col, *b).map_err(std::io::Error::other)?;
+                        }
+                        DbValue::Int(n) => {
+                            ws.write_number(*row, col, *n as f64)
+                                .map_err(std::io::Error::other)?;
+                        }
+                        DbValue::Float(f) => {
+                            ws.write_number(*row, col, *f).map_err(std::io::Error::other)?;
+                        }
+                        DbValue::Text(s) => {
+                            // Numeric-looking text (e.g. Postgres simple-protocol
+                            // values) becomes a real number in the sheet.
+                            if let Ok(n) = s.parse::<f64>() {
+                                if s.len() < 18 {
+                                    ws.write_number(*row, col, n)
+                                        .map_err(std::io::Error::other)?;
+                                    continue;
+                                }
+                            }
+                            ws.write_string(*row, col, s).map_err(std::io::Error::other)?;
+                        }
+                    }
+                }
+                *row += 1;
             }
         }
         Ok(())
@@ -457,8 +566,14 @@ impl ExportSink {
                 }
                 w.flush()?;
             }
-            ExportSink::Sql { mut w, .. } => {
+            ExportSink::Sql { mut w, multiline, rows_in_batch, .. } => {
+                if multiline && rows_in_batch > 0 {
+                    w.write_all(b";\n")?;
+                }
                 w.flush()?;
+            }
+            ExportSink::Xlsx { mut workbook, path, .. } => {
+                workbook.save(&path).map_err(std::io::Error::other)?;
             }
         }
         Ok(())
@@ -473,19 +588,17 @@ pub fn export_run(
 ) -> AppResult<ExportResult> {
     let start = std::time::Instant::now();
     let dialect = conn.dialect();
-    let file = File::create(&req.path)?;
-    let out = BufWriter::new(file);
 
     let mut sink = match req.format.as_str() {
         "csv" | "tsv" => ExportSink::Csv {
             w: csv::WriterBuilder::new()
                 .delimiter(if req.format == "tsv" { b'\t' } else { b',' })
-                .from_writer(out),
+                .from_writer(BufWriter::new(File::create(&req.path)?)),
             include_header: req.include_header,
         },
-        "json" => ExportSink::Json { w: out, first: true },
+        "json" => ExportSink::Json { w: BufWriter::new(File::create(&req.path)?), first: true },
         "sql" => ExportSink::Sql {
-            w: out,
+            w: BufWriter::new(File::create(&req.path)?),
             dialect,
             table: if req.table_name.is_empty() {
                 "exported_table".into()
@@ -493,7 +606,21 @@ pub fn export_run(
                 req.table_name.clone()
             },
             col_list: String::new(),
+            include_create: req.include_create,
+            multiline: req.insert_style == "multiline",
+            batch_limit: req.batch_limit,
+            rows_in_batch: 0,
         },
+        "xlsx" => {
+            let mut workbook = rust_xlsxwriter::Workbook::new();
+            workbook.add_worksheet();
+            ExportSink::Xlsx {
+                workbook,
+                path: req.path.clone(),
+                include_header: req.include_header,
+                row: 0,
+            }
+        }
         other => return Err(AppError::config(format!("unknown export format {other}"))),
     };
 

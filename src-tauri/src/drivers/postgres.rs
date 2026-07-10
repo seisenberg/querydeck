@@ -247,6 +247,18 @@ impl DbConnection for PostgresConn {
         })
     }
 
+    fn list_databases(&mut self) -> AppResult<Vec<String>> {
+        let rows = self.simple_rows(
+            "SELECT datname FROM pg_database \
+             WHERE NOT datistemplate AND has_database_privilege(datname, 'CONNECT') \
+             ORDER BY datname",
+        )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.into_iter().next().flatten())
+            .collect())
+    }
+
     fn catalog(&mut self) -> AppResult<Catalog> {
         const HIDDEN: &str = "('pg_catalog','information_schema','pg_toast')";
 

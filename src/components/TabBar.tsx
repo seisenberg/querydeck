@@ -5,7 +5,7 @@ export default function TabBar() {
   const activeTabId = useStore((s) => s.activeTabId);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const closeTab = useStore((s) => s.closeTab);
-  const addTab = useStore((s) => s.addTab);
+  const setConnectionPicker = useStore((s) => s.setConnectionPicker);
   const profiles = useStore((s) => s.profiles);
 
   return (
@@ -38,7 +38,11 @@ export default function TabBar() {
           </div>
         );
       })}
-      <button className="new-tab" onClick={() => addTab()} title="New console tab (⌘T)">
+      <button
+        className="new-tab"
+        onClick={() => setConnectionPicker(true)}
+        title="New console tab (⌘T) — pick a connection"
+      >
         +
       </button>
     </div>

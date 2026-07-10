@@ -125,6 +125,29 @@ pub fn list(
     Ok(out)
 }
 
+/// Drop every history entry belonging to one profile (connection deleted).
+pub fn purge_profile(profile_id: &str) -> AppResult<()> {
+    let _guard = FILE_LOCK.lock();
+    let path = history_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = String::new();
+    for line in content.lines() {
+        match serde_json::from_str::<HistoryEntry>(line) {
+            Ok(e) if e.profile_id == profile_id => continue,
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    std::fs::write(&path, out)?;
+    Ok(())
+}
+
 pub fn clear() -> AppResult<()> {
     let _guard = FILE_LOCK.lock();
     let path = history_path();

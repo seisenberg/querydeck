@@ -93,10 +93,13 @@ impl AppState {
     }
 
     /// Run `f` with the session's connection, opening it on first use.
+    /// `database` overrides the profile's database at connection time
+    /// (per-tab database switcher).
     pub fn with_conn<T>(
         &self,
         profile_id: &str,
         tab_id: &str,
+        database: Option<&str>,
         f: impl FnOnce(&mut Box<dyn DbConnection>) -> AppResult<T>,
     ) -> AppResult<T> {
         let key = session_key(profile_id, tab_id);
@@ -106,7 +109,7 @@ impl AppState {
         };
         let mut guard = slot.lock();
         if guard.is_none() {
-            let profile = self.profile(profile_id)?;
+            let profile = self.profile(profile_id)?.with_database(database);
             let conn = drivers::connect(&profile)?;
             if let Some(cancel) = conn.server_cancel() {
                 self.server_cancels.lock().insert(key.clone(), cancel.into());
@@ -114,6 +117,35 @@ impl AppState {
             *guard = Some(conn);
         }
         f(guard.as_mut().expect("connection just initialized"))
+    }
+
+    /// Drop a session's connection so the next use reconnects fresh (used
+    /// after detecting a broken connection).
+    pub fn reset_session(&self, profile_id: &str, tab_id: &str) {
+        let key = session_key(profile_id, tab_id);
+        let slot = self.sessions.lock().get(&key).cloned();
+        if let Some(slot) = slot {
+            *slot.lock() = None;
+        }
+        self.server_cancels.lock().remove(&key);
+    }
+
+    /// Open session counts per profile id (for connection-state icons).
+    pub fn sessions_count(&self) -> HashMap<String, usize> {
+        let sessions = self.sessions.lock();
+        let mut out: HashMap<String, usize> = HashMap::new();
+        for (key, slot) in sessions.iter() {
+            let Some((profile_id, _)) = key.split_once('/') else { continue };
+            // If the inner lock is held, a query is running -> open session.
+            let open = match slot.try_lock() {
+                Some(guard) => guard.is_some(),
+                None => true,
+            };
+            if open {
+                *out.entry(profile_id.to_string()).or_default() += 1;
+            }
+        }
+        out
     }
 
     pub fn close_session(&self, profile_id: &str, tab_id: &str) {

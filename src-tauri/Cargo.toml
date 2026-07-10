@@ -34,6 +34,7 @@ reqwest = { version = "0.13.4", default-features = false, features = ["blocking"
 tokio = { version = "1.52.3", features = ["rt", "net", "time"] }
 futures-util = "0.3.32"
 tokio-postgres = "0.7.18"
+rust_xlsxwriter = "0.96.0"
 
 [lib]
 name = "querydeck_lib"

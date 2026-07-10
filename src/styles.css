@@ -810,3 +810,137 @@ input[type="checkbox"] {
   white-space: nowrap;
   user-select: text;
 }
+
+/* visible scrollbars (contrast fix) */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-panel);
+}
+::-webkit-scrollbar-thumb {
+  background: #4d5566;
+  border-radius: 6px;
+  border: 2px solid var(--bg-panel);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7488;
+}
+::-webkit-scrollbar-corner {
+  background: var(--bg-panel);
+}
+
+/* toolbar connection label */
+.conn-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+}
+
+/* connection picker rows */
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  background: var(--bg-elevated);
+}
+.picker-row:hover {
+  background: var(--accent-dim);
+  color: #fff;
+}
+.picker-row .label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.picker-row .meta {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* console entries in the tree */
+.tree-node.active-console {
+  background: var(--sel);
+}
+.tree-node.closed-console .label {
+  color: var(--text-dim);
+}
+
+/* export pane */
+.export-pane {
+  padding: 14px 16px;
+  overflow: auto;
+  flex: 1;
+  user-select: text;
+}
+.export-sql {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  margin-bottom: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.export-formats {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.export-fmt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.export-fmt.selected {
+  border-color: var(--accent-dim);
+  background: rgba(20, 184, 166, 0.12);
+}
+.export-options {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 30px;
+  color: var(--text-dim);
+}
+.export-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.export-sub {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* tunnels */
+.tunnel-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tunnel-form {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}

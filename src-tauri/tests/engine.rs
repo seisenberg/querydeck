@@ -45,6 +45,7 @@ fn open_sqlite(path: &str) -> Box<dyn DbConnection> {
     let profile = ConnectionProfile {
         id: "test".into(),
         name: "test".into(),
+        ssh_tunnel: None,
         params: DriverParams::Sqlite(SqliteParams { path: path.into() }),
     };
     connect(&profile).expect("connect failed")
