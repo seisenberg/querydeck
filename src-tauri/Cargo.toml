@@ -23,14 +23,17 @@ once_cell = "1.21.4"
 libloading = "0.9.0"
 dirs = "6.0.0"
 regex = "1.13.0"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "column_decltype"] }
 postgres = { version = "0.19.14", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 uuid = { version = "1.23.4", features = ["v4"] }
 rust_decimal = { version = "1.42.1", features = ["db-postgres"] }
 mysql = { version = "28.0.0", default-features = false, features = ["minimal", "rustls-tls"] }
-jni = { version = "0.22.4", features = ["invocation"] }
+jni = { version = "0.21", features = ["invocation"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls", "json"] }
+tokio = { version = "1.52.3", features = ["rt", "net", "time"] }
+futures-util = "0.3.32"
+tokio-postgres = "0.7.18"
 
 [lib]
 name = "querydeck_lib"

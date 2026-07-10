@@ -1918,7 +1918,9 @@ dependencies = [
  "cesu8",
  "cfg-if",
  "combine",
+ "java-locator",
  "jni-sys 0.3.1",
+ "libloading 0.7.4",
  "log",
  "thiserror 1.0.69",
  "walkdir",
@@ -1933,10 +1935,8 @@ checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
 dependencies = [
  "cfg-if",
  "combine",
- "java-locator",
  "jni-macros",
  "jni-sys 0.4.1",
- "libloading 0.8.9",
  "log",
  "simd_cesu8",
  "thiserror 2.0.18",
@@ -2086,16 +2086,6 @@ checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
 dependencies = [
  "cfg-if",
  "winapi",
-]
-
-[[package]]
-name = "libloading"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
-dependencies = [
- "cfg-if",
- "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -2961,7 +2951,8 @@ dependencies = [
  "chrono",
  "csv",
  "dirs",
- "jni 0.22.4",
+ "futures-util",
+ "jni 0.21.1",
  "libloading 0.9.0",
  "mysql",
  "once_cell",
@@ -2979,6 +2970,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-postgres",
  "tokio-postgres-rustls",
  "uuid",
  "webpki-roots",
