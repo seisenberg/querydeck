@@ -60,10 +60,15 @@ fn profile_save(state: State<'_, Arc<AppState>>, profile: ConnectionProfile) -> 
 }
 
 #[tauri::command]
-fn profile_delete(state: State<'_, Arc<AppState>>, profile_id: String) -> AppResult<()> {
-    state.close_profile_sessions(&profile_id);
-    state.profiles.lock().retain(|p| p.id != profile_id);
-    state.save_profiles()
+async fn profile_delete(state: State<'_, Arc<AppState>>, profile_id: String) -> AppResult<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.close_profile_sessions(&profile_id);
+        state.profiles.lock().retain(|p| p.id != profile_id);
+        state.save_profiles()
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
 }
 
 #[tauri::command]
@@ -217,8 +222,17 @@ async fn query_run(
 }
 
 #[tauri::command]
-fn query_cancel(state: State<'_, Arc<AppState>>, profile_id: String, tab_id: String) {
-    state.cancel_session(&profile_id, &tab_id);
+async fn query_cancel(
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+    tab_id: String,
+) -> AppResult<()> {
+    let state = state.inner().clone();
+    // Server-side cancel (e.g. PostgreSQL) opens a network connection; keep it
+    // off the main thread.
+    tauri::async_runtime::spawn_blocking(move || state.cancel_session(&profile_id, &tab_id))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))
 }
 
 #[derive(Serialize)]
@@ -246,8 +260,16 @@ fn results_free(state: State<'_, Arc<AppState>>, result_ids: Vec<u64>) {
 }
 
 #[tauri::command]
-fn session_close(state: State<'_, Arc<AppState>>, profile_id: String, tab_id: String) {
-    state.close_session(&profile_id, &tab_id);
+async fn session_close(
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+    tab_id: String,
+) -> AppResult<()> {
+    let state = state.inner().clone();
+    // Closing waits for any statement still running on the session.
+    tauri::async_runtime::spawn_blocking(move || state.close_session(&profile_id, &tab_id))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))
 }
 
 // ----------------------------------------------------------------- catalog --
