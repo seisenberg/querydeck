@@ -207,7 +207,7 @@ fn default_true() -> bool {
     true
 }
 fn default_batch() -> usize {
-    200
+    500
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -518,6 +518,12 @@ impl ExportSink {
                 }
             }
             ExportSink::Xlsx { workbook, row, .. } => {
+                // Hard xlsx format limit: 1,048,576 rows per sheet.
+                if *row >= 1_048_576 {
+                    return Err(std::io::Error::other(
+                        "Excel format is limited to 1,048,576 rows per sheet — use CSV or SQL for larger exports",
+                    ));
+                }
                 let ws = workbook.worksheet_from_index(0).map_err(std::io::Error::other)?;
                 for (i, v) in values.iter().enumerate() {
                     let col = i as u16;

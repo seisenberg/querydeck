@@ -170,7 +170,7 @@ export default function ImportWizard({ target }: { target: ImportTarget }) {
         createTable: createNew,
         mappings,
         emptyAsNull,
-        batchSize: 200,
+        batchSize: 500,
       });
       setResult(
         `Imported ${res.rowsImported.toLocaleString()} rows in ${(res.elapsedMs / 1000).toFixed(1)}s`,

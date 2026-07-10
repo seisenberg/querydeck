@@ -4,31 +4,42 @@ import { api, CellValue, StatementOutcome } from "../api";
 const ROW_H = 26;
 const HEADER_H = 28;
 const PAGE = 500;
-/** Rendered rows beyond the viewport on each side. Large enough that normal
- * momentum scrolling stays on already-rendered DOM most frames. */
+/** Rendered rows beyond the viewport on each side. */
 const OVERSCAN = 30;
-/** The render window only moves in steps of this many rows, so scroll events
- * between steps cost zero React work — the browser scrolls natively. */
+/** Exact mode: render window moves in steps of this many rows. */
 const WINDOW_STEP = 10;
+/**
+ * WebKit clamps element heights in the tens of millions of pixels; past this
+ * budget we switch to a scaled scroll range (like DataGrip): the scrollbar
+ * maps proportionally onto the row range and the rendered block is anchored
+ * at the viewport.
+ */
+const H_MAX = 8_000_000;
+
+/** Flick-compounding glide: successive flicks while scrolling ADD velocity
+ * (native macOS resets momentum per flick — Sublime-style accumulation needs
+ * this assist). Native scrolling stays untouched for small deltas. */
+const FLICK_DELTA = 45; // px per wheel event that counts as a flick
+const FLICK_BOOST = 9; // velocity gained per flick-delta px (px/s)
+const GLIDE_MAX = 90_000; // px/s cap
+const GLIDE_TAU = 0.55; // s, exponential decay
+const GLIDE_MIN = 60; // px/s, stop threshold
 
 interface Props {
   outcome: StatementOutcome;
 }
 
-/**
- * Windowed grid over a backend-stored result set, tuned for native macOS
- * momentum scrolling: the scroll container is plain `overflow: auto` (so the
- * OS drives inertia), scroll events are rAF-coalesced, and React re-renders
- * only when the quantized row window actually moves.
- */
 export default function ResultsGrid({ outcome }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, CellValue[][]>());
   const inflight = useRef(new Set<number>());
   const fetchTimer = useRef<number | undefined>(undefined);
   const rafPending = useRef(false);
+  const lastScrollTs = useRef(0);
+  const glide = useRef({ v: 0, raf: 0, lastTs: 0 });
   const [, setVersion] = useState(0);
   const [windowStart, setWindowStart] = useState(0);
+  const [anchorPx, setAnchorPx] = useState(0);
   const [viewH, setViewH] = useState(400);
   const [sel, setSel] = useState<{ r: number; c: number } | null>(null);
 
@@ -36,19 +47,26 @@ export default function ResultsGrid({ outcome }: Props) {
   const rowCount = outcome.rowCount;
   const resultId = outcome.resultId;
 
+  const naturalH = rowCount * ROW_H;
+  const scaled = naturalH > H_MAX;
+  const virtualH = scaled ? H_MAX : naturalH;
+  const visibleRows = Math.ceil(viewH / ROW_H);
+  const blockRows = Math.min(rowCount, visibleRows + OVERSCAN * 2);
+
   // Column widths (px), resizable.
   const [widths, setWidths] = useState<number[]>([]);
   useEffect(() => {
     setWidths(columns.map((c) => Math.min(320, Math.max(90, c.name.length * 9 + 40))));
     pages.current.clear();
     inflight.current.clear();
+    glide.current.v = 0;
     setSel(null);
     setWindowStart(0);
+    setAnchorPx(0);
     if (containerRef.current) containerRef.current.scrollTop = 0;
     setVersion((v) => v + 1);
   }, [resultId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Observe viewport height.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -58,9 +76,19 @@ export default function ResultsGrid({ outcome }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  const visibleRows = Math.ceil(viewH / ROW_H);
+  /** First row for a given scrollTop under the active mapping. */
+  const rowForScroll = useCallback(
+    (st: number) => {
+      if (!scaled) return Math.floor(st / ROW_H);
+      const maxScroll = Math.max(1, virtualH - viewH);
+      const frac = Math.min(1, Math.max(0, st / maxScroll));
+      return Math.floor(frac * Math.max(0, rowCount - visibleRows));
+    },
+    [scaled, virtualH, viewH, rowCount, visibleRows],
+  );
+
   const firstRow = windowStart;
-  const lastRow = Math.min(rowCount - 1, windowStart + visibleRows + OVERSCAN * 2);
+  const lastRow = Math.min(rowCount - 1, windowStart + blockRows - 1);
 
   const fetchPages = useCallback(
     (from: number, to: number) => {
@@ -74,7 +102,6 @@ export default function ResultsGrid({ outcome }: Props) {
           .pageFetch(resultId, p * PAGE, PAGE)
           .then((res) => {
             pages.current.set(p, res.rows);
-            // Cache cap: keep ~40k rows in the webview, evict far pages.
             if (pages.current.size > 80) {
               for (const k of pages.current.keys()) {
                 if (k < p0 - 20 || k > p1 + 20) pages.current.delete(k);
@@ -92,8 +119,6 @@ export default function ResultsGrid({ outcome }: Props) {
     [resultId],
   );
 
-  /** Debounced fetch: during a fast flick we skip intermediate windows and
-   * always fetch the one the user lands on (trailing edge, ~50ms). */
   const scheduleFetch = useCallback(
     (from: number, to: number, immediate: boolean) => {
       window.clearTimeout(fetchTimer.current);
@@ -106,38 +131,112 @@ export default function ResultsGrid({ outcome }: Props) {
     [fetchPages],
   );
 
-  // Initial + result-change fetch.
   useEffect(() => {
     if (rowCount > 0) scheduleFetch(firstRow, lastRow, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resultId, rowCount, viewH]);
 
   const onScroll = useCallback(() => {
+    lastScrollTs.current = performance.now();
     if (rafPending.current) return;
     rafPending.current = true;
     requestAnimationFrame(() => {
       rafPending.current = false;
       const el = containerRef.current;
       if (!el) return;
-      const raw = Math.max(0, Math.floor(el.scrollTop / ROW_H) - OVERSCAN);
-      const quantized = Math.floor(raw / WINDOW_STEP) * WINDOW_STEP;
+      const st = el.scrollTop;
+      const targetRow = Math.max(0, rowForScroll(st) - OVERSCAN);
+      const quantized = scaled
+        ? targetRow // scaled mode: every ROW_H of anchor movement re-renders anyway
+        : Math.floor(targetRow / WINDOW_STEP) * WINDOW_STEP;
+      // Anchor the rendered block at the viewport (quantized to row height so
+      // we re-render at most once per 26px of travel). Clamp with the ACTUAL
+      // number of rows left to render — at the tail the block is shorter than
+      // blockRows and a blockRows-based clamp would park it above the viewport.
+      const renderedRows = Math.min(rowCount - 1, quantized + blockRows - 1) - quantized + 1;
+      const maxAnchor = Math.max(0, virtualH - renderedRows * ROW_H);
+      const nextAnchor = scaled
+        ? Math.min(maxAnchor, Math.max(0, Math.floor(st / ROW_H) * ROW_H - OVERSCAN * ROW_H))
+        : quantized * ROW_H;
+
       setWindowStart((prev) => {
-        if (quantized === prev) return prev; // pure horizontal / sub-step scroll: no re-render
-        const to = Math.min(rowCount - 1, quantized + visibleRows + OVERSCAN * 2);
-        // Fast flick (window jumped > a page): trailing fetch only.
+        setAnchorPx((prevA) => (nextAnchor === prevA ? prevA : nextAnchor));
+        if (quantized === prev) return prev;
+        const to = Math.min(rowCount - 1, quantized + blockRows - 1);
         const fast = Math.abs(quantized - prev) > PAGE;
         scheduleFetch(quantized, to, !fast);
         return quantized;
       });
     });
-  }, [rowCount, visibleRows, scheduleFetch]);
+  }, [rowCount, blockRows, scaled, virtualH, rowForScroll, scheduleFetch]);
+
+  // ---- Flick-compounding glide assist (Sublime-style momentum stacking) ----
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const stopGlide = () => {
+      glide.current.v = 0;
+    };
+
+    const glideStep = (ts: number) => {
+      const g = glide.current;
+      if (g.v === 0) return;
+      const dt = Math.min(0.05, (ts - g.lastTs) / 1000);
+      g.lastTs = ts;
+      const before = el.scrollTop;
+      el.scrollTop = before + g.v * dt;
+      // Hit an edge: kill the glide.
+      if (el.scrollTop === before && dt > 0) {
+        g.v = 0;
+        return;
+      }
+      g.v *= Math.exp(-dt / GLIDE_TAU);
+      if (Math.abs(g.v) < GLIDE_MIN) {
+        g.v = 0;
+        return;
+      }
+      g.raf = requestAnimationFrame(glideStep);
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      const d = e.deltaY;
+      const g = glide.current;
+      if (Math.abs(d) < FLICK_DELTA) return; // gentle scrolling: fully native
+      if (g.v !== 0 && Math.sign(d) !== Math.sign(g.v)) {
+        stopGlide(); // reversing direction cancels accumulated speed
+        return;
+      }
+      // Compound only when motion is already in flight (2nd+ flick); the
+      // first flick is handled natively.
+      const inMotion = performance.now() - lastScrollTs.current < 140 || g.v !== 0;
+      if (!inMotion) return;
+      const wasIdle = g.v === 0;
+      g.v = Math.max(-GLIDE_MAX, Math.min(GLIDE_MAX, g.v + d * FLICK_BOOST));
+      if (wasIdle && g.v !== 0) {
+        g.lastTs = performance.now();
+        g.raf = requestAnimationFrame(glideStep);
+      }
+    };
+
+    const onDown = () => stopGlide();
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onDown);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onDown);
+      cancelAnimationFrame(glide.current.raf);
+      stopGlide();
+    };
+  }, []);
 
   const getRow = (r: number): CellValue[] | null => {
     const page = pages.current.get(Math.floor(r / PAGE));
     return page ? (page[r % PAGE] ?? null) : null;
   };
 
-  // Copy selected cell.
   const onKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c" && sel) {
       const row = getRow(sel.r);
@@ -185,8 +284,8 @@ export default function ResultsGrid({ outcome }: Props) {
   }
 
   const rownumW = Math.max(46, String(rowCount).length * 9 + 20);
-  const topPad = firstRow * ROW_H;
-  const bottomPad = Math.max(0, (rowCount - 1 - lastRow) * ROW_H);
+  const topPad = anchorPx;
+  const bottomPad = Math.max(0, virtualH - topPad - visible.length * ROW_H);
 
   return (
     <div
