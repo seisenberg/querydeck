@@ -84,6 +84,12 @@ interface Store {
   tabs: TabState[];
   activeTabId: string | null;
 
+  // persisted UI layout
+  sidebarWidth: number;
+  sidebarCollapsed: boolean;
+  /** Editor pane height as a fraction of the console split. */
+  editorFrac: number;
+
   // modals
   connectionModal: { open: boolean; editing: ConnectionProfile | null; presetJar?: string };
   ddlModal: DdlTarget | null;
@@ -107,6 +113,12 @@ interface Store {
   addTab(profileId?: string | null, sql?: string, autorun?: boolean): string;
   closeTab(id: string): void;
   moveTab(id: string, toIndex: number): void;
+  /** "+" / ⌘T: with no consoles open, reopen the most recent saved one;
+   * only fall back to the connection picker when none exist at all. */
+  newConsoleRequested(): void;
+  setSidebarWidth(w: number): void;
+  toggleSidebar(): void;
+  setEditorFrac(f: number): void;
   reopenConsole(file: ConsoleFile): void;
   deleteConsole(profileId: string, consoleId: string): Promise<void>;
   setActiveTab(id: string): void;
@@ -170,12 +182,25 @@ interface PersistedTab {
 interface PersistedSession {
   tabs: PersistedTab[];
   activeTabId: string | null;
+  ui?: {
+    sidebarWidth: number;
+    sidebarCollapsed: boolean;
+    editorFrac: number;
+  };
 }
 
 let persistTimer: number | undefined;
 /** Debounced write of the open-console layout, so quitting and relaunching
  * brings back the same set of consoles. */
-function schedulePersist(get: () => { tabs: TabState[]; activeTabId: string | null }) {
+function schedulePersist(
+  get: () => {
+    tabs: TabState[];
+    activeTabId: string | null;
+    sidebarWidth: number;
+    sidebarCollapsed: boolean;
+    editorFrac: number;
+  },
+) {
   window.clearTimeout(persistTimer);
   persistTimer = window.setTimeout(() => {
     const s = get();
@@ -189,9 +214,32 @@ function schedulePersist(get: () => { tabs: TabState[]; activeTabId: string | nu
         maxRows: t.maxRows,
       })),
       activeTabId: s.activeTabId,
+      ui: {
+        sidebarWidth: s.sidebarWidth,
+        sidebarCollapsed: s.sidebarCollapsed,
+        editorFrac: s.editorFrac,
+      },
     };
     void api.sessionStateSave(JSON.stringify(snapshot)).catch(() => undefined);
   }, 400);
+}
+
+/** Console numbering is per connection: "console N" where N is one past the
+ * highest number among that connection's open tabs and saved consoles. */
+function nextConsoleTitle(
+  tabs: TabState[],
+  closed: Record<string, ConsoleFile[]>,
+  profileId: string,
+): string {
+  const titles = [
+    ...tabs.filter((t) => t.profileId === profileId).map((t) => t.title),
+    ...(closed[profileId] ?? []).map((c) => c.title),
+  ];
+  const max = titles.reduce((m, title) => {
+    const match = /^console (\d+)$/.exec(title);
+    return match ? Math.max(m, Number(match[1])) : m;
+  }, 0);
+  return `console ${max + 1}`;
 }
 
 function nowTime(): string {
@@ -217,6 +265,10 @@ export const useStore = create<Store>((set, get) => {
 
     tabs: [],
     activeTabId: null,
+
+    sidebarWidth: 280,
+    sidebarCollapsed: false,
+    editorFrac: 0.38,
 
     connectionModal: { open: false, editing: null },
     ddlModal: null,
@@ -255,6 +307,13 @@ export const useStore = create<Store>((set, get) => {
           const activeTabId =
             tabs.find((t) => t.id === saved.activeTabId)?.id ?? tabs[tabs.length - 1]?.id ?? null;
           set({ tabs, activeTabId });
+          if (saved.ui) {
+            set({
+              sidebarWidth: Math.max(180, Math.min(560, saved.ui.sidebarWidth ?? 280)),
+              sidebarCollapsed: !!saved.ui.sidebarCollapsed,
+              editorFrac: Math.max(0.12, Math.min(0.85, saved.ui.editorFrac ?? 0.38)),
+            });
+          }
         }
       } catch {
         // a corrupt session file just means starting empty
@@ -292,9 +351,13 @@ export const useStore = create<Store>((set, get) => {
     async loadClosedConsoles() {
       try {
         const all = await api.consoleList();
+        const openIds = new Set(get().tabs.map((t) => t.id));
         const grouped: Record<string, ConsoleFile[]> = {};
         for (const c of all) {
-          if (!c.closed) continue;
+          // A file still flagged "open" whose console isn't actually open
+          // (app quit/crashed with it up) is effectively closed — adopt it,
+          // so it shows in the tree and its number is never reused.
+          if (!c.closed && openIds.has(c.id)) continue;
           (grouped[c.profileId] ??= []).push(c);
         }
         set({ closedConsoles: grouped });
@@ -353,6 +416,9 @@ export const useStore = create<Store>((set, get) => {
       const s0 = get();
       const active = s0.tabs.find((t) => t.id === s0.activeTabId);
       const t = newTab(profileId ?? active?.profileId ?? null, sql);
+      if (t.profileId) {
+        t.title = nextConsoleTitle(s0.tabs, s0.closedConsoles, t.profileId);
+      }
       set((s) => ({ tabs: [...s.tabs, t], activeTabId: t.id }));
       if (t.profileId) {
         void get().loadDatabases(t.profileId);
@@ -405,6 +471,34 @@ export const useStore = create<Store>((set, get) => {
         tabs.splice(to, 0, moved);
         return { tabs };
       });
+      schedulePersist(get);
+    },
+
+    newConsoleRequested() {
+      const s = get();
+      if (s.tabs.length === 0) {
+        const all = Object.values(s.closedConsoles).flat();
+        if (all.length) {
+          const latest = all.reduce((a, b) => (b.updatedAt > a.updatedAt ? b : a));
+          get().reopenConsole(latest);
+          return;
+        }
+      }
+      set({ connectionPicker: true });
+    },
+
+    setSidebarWidth(w) {
+      set({ sidebarWidth: Math.max(180, Math.min(560, w)) });
+      schedulePersist(get);
+    },
+
+    toggleSidebar() {
+      set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed }));
+      schedulePersist(get);
+    },
+
+    setEditorFrac(f) {
+      set({ editorFrac: Math.max(0.12, Math.min(0.85, f)) });
       schedulePersist(get);
     },
 

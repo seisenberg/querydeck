@@ -197,13 +197,47 @@ input[type="radio"] {
 
 /* ---------------------------------------------------------- sidebar ------ */
 .sidebar {
-  width: 280px;
-  min-width: 200px;
+  width: 280px; /* inline-overridden by the persisted width */
+  min-width: 180px;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* Collapsed: a thin rail that only hosts the re-expand button. */
+.sidebar.sidebar-rail {
+  width: 34px;
+  min-width: 34px;
+}
+.sidebar-rail .rail-top {
+  height: var(--topbar-h);
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-rail .rail-expand {
+  margin: 8px auto 0;
+}
+/* Collapsed on macOS: the rail is narrower than the traffic lights, which
+ * then overlay the start of the tab strip — give the tabs room. */
+:root[data-platform="mac"] .sidebar-is-collapsed .tabbar {
+  padding-left: 44px;
+}
+
+/* Sidebar ⇄ main drag handle. The visible border stays 1px; the hit area
+ * is widened without affecting layout. */
+.v-resizer {
+  width: 5px;
+  margin-left: -3px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  z-index: 10;
+}
+.v-resizer:hover {
+  background: var(--accent-dim);
+  opacity: 0.5;
 }
 
 .sidebar-header {
@@ -216,13 +250,22 @@ input[type="radio"] {
   font-weight: 600;
   flex-shrink: 0;
 }
-/* The title is inert — clicks pass through to the header drag region. */
+/* The title is inert (clicks pass through to the header drag region) and
+ * centered across the strip like a native titlebar. */
+.sidebar-header {
+  position: relative;
+}
 .sidebar-header .sidebar-title {
   pointer-events: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
 }
 .sidebar-header .actions {
   display: flex;
   gap: 4px;
+  margin-left: auto;
 }
 
 .tree {
@@ -266,12 +309,15 @@ input[type="radio"] {
 .tree-node .spacer {
   flex: 1;
 }
+/* Reserve the space even when hidden: display toggling reflows the row and
+ * makes the hover highlight look jumpy as the mouse moves down the tree. */
 .tree-node .hover-actions {
-  display: none;
+  display: flex;
+  visibility: hidden;
   gap: 2px;
 }
 .tree-node:hover .hover-actions {
-  display: flex;
+  visibility: visible;
 }
 .tree-empty {
   color: var(--text-dim);
@@ -365,12 +411,34 @@ input[type="radio"] {
   font-size: 12px;
 }
 
+.split-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .editor-container {
-  height: 38%;
-  min-height: 90px;
-  border-bottom: 1px solid var(--border);
+  height: 38%; /* inline-overridden by the persisted split fraction */
+  min-height: 60px;
   overflow: hidden;
   position: relative;
+  flex-shrink: 0;
+}
+
+/* Editor ⇄ results drag handle. */
+.h-splitter {
+  height: 5px;
+  margin: -2px 0;
+  cursor: row-resize;
+  flex-shrink: 0;
+  z-index: 10;
+  border-top: 1px solid var(--border);
+  background-clip: content-box;
+}
+.h-splitter:hover {
+  background: var(--accent-dim);
+  opacity: 0.5;
 }
 .editor-container .cm-editor {
   height: 100%;

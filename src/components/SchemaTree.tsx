@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { ConnectionProfile, ConsoleFile, TableInfo } from "../api";
 import { useStore } from "../store";
 import { ConsoleIcon, DbIcon, Expander, TableIcon, ViewIcon, engineOf } from "./DbIcons";
@@ -13,6 +13,7 @@ interface CtxMenu {
 export default function SchemaTree() {
   const profiles = useStore((s) => s.profiles);
   const openConnectionModal = useStore((s) => s.openConnectionModal);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
 
   useEffect(() => {
@@ -33,6 +34,9 @@ export default function SchemaTree() {
         <span className="actions">
           <button className="small ghost" title="New connection" onClick={() => openConnectionModal()}>
             +
+          </button>
+          <button className="small ghost" title="Hide connections" onClick={toggleSidebar}>
+            «
           </button>
         </span>
       </div>
@@ -70,7 +74,9 @@ export default function SchemaTree() {
   );
 }
 
-function ProfileNode({
+/** Memoized: SchemaTree re-renders whenever the context menu opens/closes;
+ * the per-connection subtrees only need to follow their own store slices. */
+const ProfileNode = memo(function ProfileNode({
   profile,
   setCtx,
 }: {
@@ -86,10 +92,11 @@ function ProfileNode({
   const openConnectionModal = useStore((s) => s.openConnectionModal);
   const openImport = useStore((s) => s.openImport);
   const addTab = useStore((s) => s.addTab);
-  const sessions = useStore((s) => s.sessions);
+  // Primitive selector: a sessions-map refresh only re-renders this node
+  // when THIS connection's count actually changed.
+  const openSessions = useStore((s) => s.sessions[profile.id] ?? 0);
   const disconnectProfile = useStore((s) => s.disconnectProfile);
 
-  const openSessions = sessions[profile.id] ?? 0;
   const connected = openSessions > 0;
 
   const onContext = (e: React.MouseEvent) => {
@@ -151,7 +158,7 @@ function ProfileNode({
       )}
     </>
   );
-}
+});
 
 /** Stable fallback: a zustand selector must return a cached snapshot —
  * building `?? []` inside it yields a fresh array every call, which

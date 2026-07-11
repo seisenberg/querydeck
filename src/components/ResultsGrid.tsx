@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, CellValue, StatementOutcome } from "../api";
 
 const ROW_H = 26;
@@ -29,7 +29,11 @@ interface Props {
   outcome: StatementOutcome;
 }
 
-export default function ResultsGrid({ outcome }: Props) {
+/** Memoized: the grid only re-renders when its own outcome changes, not on
+ * every keystroke or unrelated store update in the surrounding console. */
+export default memo(ResultsGrid);
+
+function ResultsGrid({ outcome }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, CellValue[][]>());
   const inflight = useRef(new Set<number>());

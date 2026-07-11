@@ -20,7 +20,7 @@ export default function TabBar() {
   const setActiveTab = useStore((s) => s.setActiveTab);
   const closeTab = useStore((s) => s.closeTab);
   const moveTab = useStore((s) => s.moveTab);
-  const setConnectionPicker = useStore((s) => s.setConnectionPicker);
+  const newConsoleRequested = useStore((s) => s.newConsoleRequested);
   const profiles = useStore((s) => s.profiles);
 
   const barRef = useRef<HTMLDivElement>(null);
@@ -90,8 +90,8 @@ export default function TabBar() {
       })}
       <button
         className="new-tab"
-        onClick={() => setConnectionPicker(true)}
-        title="New console tab (⌘T) — pick a connection"
+        onClick={() => newConsoleRequested()}
+        title="New console tab (⌘T)"
       >
         +
       </button>

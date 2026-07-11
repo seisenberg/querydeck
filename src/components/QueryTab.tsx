@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo, useRef } from "react";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { splitStatements } from "../sqlsplit";
 import { LogEntry, ROW_LIMITS, TabState, limitLabel, useStore } from "../store";
@@ -12,11 +12,25 @@ interface Props {
   active: boolean;
 }
 
-export default function QueryTab({ tab }: Props) {
+const NO_DBS: string[] = [];
+
+/** Memoized: keystrokes update one tab's state, and only that pane (plus the
+ * tab strip) should re-render — not every open console and its grid. */
+export default memo(QueryTab);
+
+function QueryTab({ tab }: Props) {
   const profiles = useStore((s) => s.profiles);
-  const catalogs = useStore((s) => s.catalogs);
-  const sessions = useStore((s) => s.sessions);
-  const databasesByProfile = useStore((s) => s.databasesByProfile);
+  // Narrow, per-connection selectors: refreshes for other connections must
+  // not re-render this console.
+  const catalog = useStore((s) => (tab.profileId ? s.catalogs[tab.profileId] : undefined));
+  const openSessions = useStore((s) =>
+    tab.profileId ? (s.sessions[tab.profileId] ?? 0) : 0,
+  );
+  const databases = useStore((s) =>
+    tab.profileId ? s.databasesByProfile[tab.profileId] : undefined,
+  );
+  const editorFrac = useStore((s) => s.editorFrac);
+  const setEditorFrac = useStore((s) => s.setEditorFrac);
   const setTabSql = useStore((s) => s.setTabSql);
   const setTabDatabase = useStore((s) => s.setTabDatabase);
   const setTabLimit = useStore((s) => s.setTabLimit);
@@ -26,10 +40,26 @@ export default function QueryTab({ tab }: Props) {
   const cancelQuery = useStore((s) => s.cancelQuery);
   const setConnectionPicker = useStore((s) => s.setConnectionPicker);
 
+  const splitRef = useRef<HTMLDivElement>(null);
+
   const profile = profiles.find((p) => p.id === tab.profileId) ?? null;
-  const catalog = tab.profileId ? catalogs[tab.profileId] : undefined;
-  const databases = tab.profileId ? (databasesByProfile[tab.profileId] ?? []) : [];
-  const connected = profile ? (sessions[profile.id] ?? 0) > 0 : false;
+  const connected = openSessions > 0;
+
+  const beginSplitDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const host = splitRef.current;
+    if (!host) return;
+    const rect = host.getBoundingClientRect();
+    const move = (ev: MouseEvent) => setEditorFrac((ev.clientY - rect.top) / rect.height);
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.style.cursor = "";
+    };
+    document.body.style.cursor = "row-resize";
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   const schemaNs: SQLNamespace | undefined = useMemo(() => {
     if (!catalog) return undefined;
@@ -66,7 +96,7 @@ export default function QueryTab({ tab }: Props) {
           </button>
         )}
 
-        {profile && databases.length > 0 && (
+        {profile && (databases ?? NO_DBS).length > 0 && (
           <label>
             DB{" "}
             <select
@@ -75,7 +105,7 @@ export default function QueryTab({ tab }: Props) {
               title="Switch database on this connection (reconnects this console)"
               style={{ maxWidth: 180 }}
             >
-              {databases.map((d) => (
+              {(databases ?? NO_DBS).map((d) => (
                 <option key={d} value={d}>
                   {d}
                 </option>
@@ -113,16 +143,20 @@ export default function QueryTab({ tab }: Props) {
         <span className="hint">⌘⏎ statement · ⌘⇧⏎ all</span>
       </div>
 
-      <SqlEditor
-        initialSql={tab.sql}
-        driver={profile?.driver ?? null}
-        schema={schemaNs}
-        onChange={(sql) => setTabSql(tab.id, sql)}
-        onRunStatement={(sql) => void runQuery(tab.id, sql)}
-        onRunAll={() => void runQuery(tab.id)}
-      />
+      <div className="split-host" ref={splitRef}>
+        <SqlEditor
+          initialSql={tab.sql}
+          driver={profile?.driver ?? null}
+          schema={schemaNs}
+          heightPct={editorFrac}
+          onChange={(sql) => setTabSql(tab.id, sql)}
+          onRunStatement={(sql) => void runQuery(tab.id, sql)}
+          onRunAll={() => void runQuery(tab.id)}
+        />
 
-      <div className="results-area">
+        <div className="h-splitter" onMouseDown={beginSplitDrag} title="Drag to resize" />
+
+        <div className="results-area">
         <div className="bottom-tabs">
           <button
             className={`btab ${tab.bottomTab === "results" ? "active" : ""}`}
@@ -131,16 +165,16 @@ export default function QueryTab({ tab }: Props) {
             Results
           </button>
           <button
-            className={`btab ${tab.bottomTab === "log" ? "active" : ""}`}
-            onClick={() => setBottomTab(tab.id, "log")}
-          >
-            Log{tab.log.length > 0 ? ` (${tab.log.length})` : ""}
-          </button>
-          <button
             className={`btab ${tab.bottomTab === "export" ? "active" : ""}`}
             onClick={() => setBottomTab(tab.id, "export")}
           >
             Export
+          </button>
+          <button
+            className={`btab ${tab.bottomTab === "log" ? "active" : ""}`}
+            onClick={() => setBottomTab(tab.id, "log")}
+          >
+            Log{tab.log.length > 0 ? ` (${tab.log.length})` : ""}
           </button>
         </div>
 
@@ -227,6 +261,7 @@ export default function QueryTab({ tab }: Props) {
             </div>
           )
         )}
+        </div>
       </div>
     </>
   );

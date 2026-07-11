@@ -20,6 +20,8 @@ interface Props {
   initialSql: string;
   driver: DriverKind | null;
   schema: SQLNamespace | undefined;
+  /** Editor pane height as a fraction of the console split. */
+  heightPct?: number;
   onChange: (sql: string) => void;
   onRunStatement: (sql: string) => void;
   onRunAll: () => void;
@@ -92,6 +94,7 @@ export default function SqlEditor({
   initialSql,
   driver,
   schema,
+  heightPct,
   onChange,
   onRunStatement,
   onRunAll,
@@ -189,5 +192,11 @@ export default function SqlEditor({
     });
   }, [driver, schema]);
 
-  return <div className="editor-container" ref={hostRef} />;
+  return (
+    <div
+      className="editor-container"
+      ref={hostRef}
+      style={heightPct != null ? { height: `${heightPct * 100}%` } : undefined}
+    />
+  );
 }

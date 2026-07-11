@@ -6,7 +6,7 @@ import HistoryModal from "./components/HistoryModal";
 import ConnectionPicker from "./components/ConnectionPicker";
 import TunnelsModal from "./components/TunnelsModal";
 import SchemaTree from "./components/SchemaTree";
-import TabBar from "./components/TabBar";
+import TabBar, { dragRegionMouseDown } from "./components/TabBar";
 import QueryTab from "./components/QueryTab";
 import ConnectionModal from "./components/ConnectionModal";
 import DdlModal from "./components/DdlModal";
@@ -19,6 +19,11 @@ export default function App() {
   const init = useStore((s) => s.init);
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
+  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
+  const setSidebarWidth = useStore((s) => s.setSidebarWidth);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const newConsoleRequested = useStore((s) => s.newConsoleRequested);
   const connectionModal = useStore((s) => s.connectionModal);
   const ddlModal = useStore((s) => s.ddlModal);
   const importModal = useStore((s) => s.importModal);
@@ -30,7 +35,6 @@ export default function App() {
   const setTunnelsModal = useStore((s) => s.setTunnelsModal);
   const setDriversModal = useStore((s) => s.setDriversModal);
   const connectionPicker = useStore((s) => s.connectionPicker);
-  const setConnectionPicker = useStore((s) => s.setConnectionPicker);
   const toast = useStore((s) => s.toast);
 
   useEffect(() => {
@@ -61,18 +65,52 @@ export default function App() {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "t") {
         e.preventDefault();
-        setConnectionPicker(true);
+        newConsoleRequested();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setConnectionPicker]);
+  }, [newConsoleRequested]);
+
+  // Sidebar resize: plain window-level drag, no re-render churn beyond the
+  // store's width value.
+  const beginSidebarResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const move = (ev: MouseEvent) => setSidebarWidth(ev.clientX);
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.style.cursor = "";
+    };
+    document.body.style.cursor = "col-resize";
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <SchemaTree />
-      </aside>
+    <div className={`app ${sidebarCollapsed ? "sidebar-is-collapsed" : ""}`}>
+      {sidebarCollapsed ? (
+        <aside className="sidebar sidebar-rail">
+          {/* Empty strip: on macOS the traffic lights overlay this area, so
+              the expand button lives BELOW it (a button here would sit
+              underneath the close button — untappable and dangerous). */}
+          <div className="rail-top" onMouseDown={dragRegionMouseDown} />
+          <button
+            className="small ghost rail-expand"
+            title="Show connections"
+            onClick={toggleSidebar}
+          >
+            »
+          </button>
+        </aside>
+      ) : (
+        <>
+          <aside className="sidebar" style={{ width: sidebarWidth }}>
+            <SchemaTree />
+          </aside>
+          <div className="v-resizer" onMouseDown={beginSidebarResize} title="Drag to resize" />
+        </>
+      )}
       <main className="main">
         <TabBar />
         <div className="tab-host">
@@ -88,7 +126,7 @@ export default function App() {
           {tabs.length === 0 && (
             <div className="placeholder" style={{ flex: 1, flexDirection: "column" }}>
               <div>No consoles open.</div>
-              <button className="primary" onClick={() => setConnectionPicker(true)}>
+              <button className="primary" onClick={() => newConsoleRequested()}>
                 New console (⌘T)
               </button>
             </div>
