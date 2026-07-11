@@ -228,16 +228,19 @@ input[type="radio"] {
 
 /* Sidebar ⇄ main drag handle. The visible border stays 1px; the hit area
  * is widened without affecting layout. */
+/* Real in-flow gutter: a definite hit area beats clever negative margins
+ * (static z-index is ignored, so overlapped halves were unclickable). */
 .v-resizer {
-  width: 5px;
-  margin-left: -3px;
+  width: 6px;
   cursor: col-resize;
   flex-shrink: 0;
-  z-index: 10;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  touch-action: none;
 }
-.v-resizer:hover {
+.v-resizer:hover,
+.v-resizer:active {
   background: var(--accent-dim);
-  opacity: 0.5;
 }
 
 .sidebar-header {
@@ -440,17 +443,17 @@ input[type="radio"] {
 
 /* Editor ⇄ results drag handle. */
 .h-splitter {
-  height: 5px;
-  margin: -2px 0;
+  height: 6px;
   cursor: row-resize;
   flex-shrink: 0;
-  z-index: 10;
+  background: var(--bg-panel);
   border-top: 1px solid var(--border);
-  background-clip: content-box;
+  border-bottom: 1px solid var(--border);
+  touch-action: none;
 }
-.h-splitter:hover {
+.h-splitter:hover,
+.h-splitter:active {
   background: var(--accent-dim);
-  opacity: 0.5;
 }
 .editor-container .cm-editor {
   height: 100%;

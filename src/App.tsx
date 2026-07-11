@@ -72,19 +72,14 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [newConsoleRequested]);
 
-  // Sidebar resize: plain window-level drag, no re-render churn beyond the
-  // store's width value.
-  const beginSidebarResize = (e: React.MouseEvent) => {
+  // Sidebar resize via pointer capture — survives re-renders mid-drag.
+  const onResizerPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
     e.preventDefault();
-    const move = (ev: MouseEvent) => setSidebarWidth(ev.clientX);
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      document.body.style.cursor = "";
-    };
-    document.body.style.cursor = "col-resize";
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onResizerPointerMove = (e: React.PointerEvent) => {
+    if (e.buttons & 1) setSidebarWidth(e.clientX);
   };
 
   return (
@@ -108,7 +103,12 @@ export default function App() {
           <aside className="sidebar" style={{ width: sidebarWidth }}>
             <SchemaTree />
           </aside>
-          <div className="v-resizer" onMouseDown={beginSidebarResize} title="Drag to resize" />
+          <div
+            className="v-resizer"
+            onPointerDown={onResizerPointerDown}
+            onPointerMove={onResizerPointerMove}
+            title="Drag to resize"
+          />
         </>
       )}
       <main className="main">

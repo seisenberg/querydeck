@@ -41,24 +41,26 @@ function QueryTab({ tab }: Props) {
   const setConnectionPicker = useStore((s) => s.setConnectionPicker);
 
   const splitRef = useRef<HTMLDivElement>(null);
+  const splitRect = useRef<DOMRect | null>(null);
 
   const profile = profiles.find((p) => p.id === tab.profileId) ?? null;
   const connected = openSessions > 0;
 
-  const beginSplitDrag = (e: React.MouseEvent) => {
+  // Pointer capture keeps the drag alive no matter how the panes re-render
+  // underneath (window-level mouse listeners proved flaky mid-drag).
+  const onSplitPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || !splitRef.current) return;
     e.preventDefault();
-    const host = splitRef.current;
-    if (!host) return;
-    const rect = host.getBoundingClientRect();
-    const move = (ev: MouseEvent) => setEditorFrac((ev.clientY - rect.top) / rect.height);
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      document.body.style.cursor = "";
-    };
-    document.body.style.cursor = "row-resize";
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    splitRect.current = splitRef.current.getBoundingClientRect();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onSplitPointerMove = (e: React.PointerEvent) => {
+    const rect = splitRect.current;
+    if (!rect || !(e.buttons & 1)) return;
+    setEditorFrac((e.clientY - rect.top) / rect.height);
+  };
+  const onSplitPointerUp = () => {
+    splitRect.current = null;
   };
 
   const schemaNs: SQLNamespace | undefined = useMemo(() => {
@@ -154,7 +156,13 @@ function QueryTab({ tab }: Props) {
           onRunAll={() => void runQuery(tab.id)}
         />
 
-        <div className="h-splitter" onMouseDown={beginSplitDrag} title="Drag to resize" />
+        <div
+          className="h-splitter"
+          onPointerDown={onSplitPointerDown}
+          onPointerMove={onSplitPointerMove}
+          onPointerUp={onSplitPointerUp}
+          title="Drag to resize"
+        />
 
         <div className="results-area">
         <div className="bottom-tabs">
