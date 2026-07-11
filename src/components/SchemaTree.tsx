@@ -152,13 +152,19 @@ function ProfileNode({
   );
 }
 
+/** Stable fallback: a zustand selector must return a cached snapshot —
+ * building `?? []` inside it yields a fresh array every call, which
+ * useSyncExternalStore treats as an endless stream of new snapshots
+ * (infinite re-render loop, blank window). */
+const NO_CLOSED_CONSOLES: ConsoleFile[] = [];
+
 /** Logical "Consoles" item: open tabs plus persisted (closed) consoles. */
 function ConsolesNode({ profileId }: { profileId: string }) {
   const [open, setOpen] = useState(true);
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
   const setActiveTab = useStore((s) => s.setActiveTab);
-  const closed = useStore((s) => s.closedConsoles[profileId] ?? []);
+  const closed = useStore((s) => s.closedConsoles[profileId]) ?? NO_CLOSED_CONSOLES;
   const reopenConsole = useStore((s) => s.reopenConsole);
   const deleteConsole = useStore((s) => s.deleteConsole);
 
