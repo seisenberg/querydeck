@@ -9,7 +9,7 @@ export default function TabBar() {
   const profiles = useStore((s) => s.profiles);
 
   return (
-    <div className="tabbar">
+    <div className="tabbar" data-tauri-drag-region>
       {tabs.map((t) => {
         const prof = profiles.find((p) => p.id === t.profileId);
         return (

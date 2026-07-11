@@ -95,7 +95,7 @@ pub fn split_statements(script: &str) -> Vec<Statement> {
             }
             b';' => {
                 let text = script[start..i].trim();
-                if !text.is_empty() {
+                if !text.is_empty() && !is_only_comments(text) {
                     out.push(Statement { sql: text.to_string(), offset: start });
                 }
                 i += 1;
@@ -105,10 +105,46 @@ pub fn split_statements(script: &str) -> Vec<Statement> {
         }
     }
     let text = script[start..].trim();
-    if !text.is_empty() {
+    if !text.is_empty() && !is_only_comments(text) {
         out.push(Statement { sql: text.to_string(), offset: start });
     }
     out
+}
+
+/// True when a segment holds nothing but whitespace and SQL comments —
+/// executing such a "statement" is a driver error (e.g. sqlite's
+/// "bad parameter or other API misuse"), so the splitter drops it.
+fn is_only_comments(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        match bytes[i] {
+            b if (b as char).is_whitespace() => i += 1,
+            b'-' if i + 1 < n && bytes[i + 1] == b'-' => {
+                while i < n && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < n && bytes[i + 1] == b'*' => {
+                let mut depth = 1;
+                i += 2;
+                while i < n && depth > 0 {
+                    if i + 1 < n && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                    } else if i + 1 < n && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone)]

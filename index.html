@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>QueryDeck</title>
+    <style>
+      /* Pre-hydration paint: match the OS scheme so launch never flashes
+         the wrong background. */
+      html { background: #1e2129; }
+      @media (prefers-color-scheme: light) { html { background: #ffffff; } }
+    </style>
   </head>
   <body>
     <div id="root"></div>

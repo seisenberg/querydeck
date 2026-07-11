@@ -27,8 +27,8 @@ export default function SchemaTree() {
 
   return (
     <>
-      <div className="sidebar-header">
-        <span>Connections</span>
+      <div className="sidebar-header" data-tauri-drag-region>
+        <span data-tauri-drag-region>Connections</span>
         <span className="actions">
           <button className="small ghost" title="New connection" onClick={() => openConnectionModal()}>
             +

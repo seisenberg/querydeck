@@ -7,6 +7,36 @@ export interface StatementSpan {
   to: number;
 }
 
+/** True when a segment holds nothing but whitespace and SQL comments —
+ * running such a "statement" is a driver error, so the splitter drops it. */
+function isOnlyComments(text: string): boolean {
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const c = text[i];
+    if (/\s/.test(c)) {
+      i++;
+    } else if (c === "-" && text[i + 1] === "-") {
+      while (i < n && text[i] !== "\n") i++;
+    } else if (c === "/" && text[i + 1] === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (text[i] === "/" && text[i + 1] === "*") {
+          depth++;
+          i += 2;
+        } else if (text[i] === "*" && text[i + 1] === "/") {
+          depth--;
+          i += 2;
+        } else i++;
+      }
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function splitStatements(script: string): StatementSpan[] {
   const out: StatementSpan[] = [];
   const n = script.length;
@@ -16,7 +46,7 @@ export function splitStatements(script: string): StatementSpan[] {
   const push = (endExclusive: number) => {
     const raw = script.slice(start, endExclusive);
     const sql = raw.trim();
-    if (sql) {
+    if (sql && !isOnlyComments(sql)) {
       const lead = raw.length - raw.trimStart().length;
       out.push({ sql, from: start + lead, to: start + lead + sql.length });
     }

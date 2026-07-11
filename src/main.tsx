@@ -3,6 +3,15 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
+/** Platform class for native-feel styling: font stacks, scrollbar treatment,
+ * control radii and the macOS overlay-titlebar inset all key off this. */
+const ua = navigator.userAgent;
+document.documentElement.dataset.platform = ua.includes("Mac")
+  ? "mac"
+  : ua.includes("Windows")
+    ? "windows"
+    : "linux";
+
 /** Last-resort crash surface: a render error must never leave a silent blank
  * window — show what broke so it can be reported and the app restarted. */
 class CrashBoundary extends React.Component<

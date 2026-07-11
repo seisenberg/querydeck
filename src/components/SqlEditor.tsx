@@ -5,7 +5,14 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { sql, SQLNamespace, StandardSQL, PostgreSQL, MySQL, SQLite } from "@codemirror/lang-sql";
 import { autocompletion, completionKeymap, closeBrackets } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from "@codemirror/language";
+import {
+  syntaxHighlighting,
+  defaultHighlightStyle,
+  HighlightStyle,
+  indentOnInput,
+  bracketMatching,
+} from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { statementAt } from "../sqlsplit";
 import type { DriverKind } from "../api";
 
@@ -18,33 +25,55 @@ interface Props {
   onRunAll: () => void;
 }
 
-const darkTheme = EditorView.theme(
-  {
-    "&": { backgroundColor: "var(--bg)", color: "var(--text)" },
-    ".cm-content": { caretColor: "var(--accent)" },
-    ".cm-cursor": { borderLeftColor: "var(--accent)" },
-    ".cm-gutters": {
-      backgroundColor: "var(--bg-panel)",
-      color: "var(--text-dim)",
-      border: "none",
-      borderRight: "1px solid var(--border)",
+/** Editor chrome. Colors come from the CSS theme tokens, so one spec serves
+ * both schemes — only CodeMirror's internal `dark` flag needs to differ. */
+function makeChrome(dark: boolean) {
+  return EditorView.theme(
+    {
+      "&": { backgroundColor: "var(--bg)", color: "var(--text)" },
+      ".cm-content": { caretColor: "var(--accent)" },
+      ".cm-cursor": { borderLeftColor: "var(--accent)" },
+      ".cm-gutters": {
+        backgroundColor: "var(--bg-panel)",
+        color: "var(--text-dim)",
+        border: "none",
+        borderRight: "1px solid var(--border)",
+      },
+      ".cm-activeLine": { backgroundColor: "var(--active-line)" },
+      ".cm-activeLineGutter": { backgroundColor: "transparent" },
+      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
+        backgroundColor: "var(--sel) !important",
+      },
+      ".cm-tooltip": {
+        backgroundColor: "var(--bg-elevated)",
+        border: "1px solid var(--border)",
+        color: "var(--text)",
+      },
+      ".cm-tooltip-autocomplete ul li[aria-selected]": {
+        backgroundColor: "var(--accent-dim)",
+      },
     },
-    ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.03)" },
-    ".cm-activeLineGutter": { backgroundColor: "transparent" },
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-      backgroundColor: "rgba(20,184,166,0.25) !important",
-    },
-    ".cm-tooltip": {
-      backgroundColor: "var(--bg-elevated)",
-      border: "1px solid var(--border)",
-      color: "var(--text)",
-    },
-    ".cm-tooltip-autocomplete ul li[aria-selected]": {
-      backgroundColor: "var(--accent-dim)",
-    },
-  },
-  { dark: true },
-);
+    { dark },
+  );
+}
+
+/** Syntax colors tuned for the dark palette (defaultHighlightStyle is
+ * designed for light backgrounds and reads muddy on dark). */
+const darkHighlight = HighlightStyle.define([
+  { tag: tags.keyword, color: "#c678dd" },
+  { tag: [tags.string, tags.special(tags.string)], color: "#98c379" },
+  { tag: [tags.number, tags.bool, tags.null], color: "#d19a66" },
+  { tag: tags.comment, color: "#7f848e", fontStyle: "italic" },
+  { tag: [tags.typeName, tags.className], color: "#e5c07b" },
+  { tag: [tags.operator, tags.compareOperator], color: "#56b6c2" },
+  { tag: tags.function(tags.variableName), color: "#61afef" },
+  { tag: tags.propertyName, color: "#e06c75" },
+]);
+
+const themeFor = (dark: boolean) => [
+  makeChrome(dark),
+  syntaxHighlighting(dark ? darkHighlight : defaultHighlightStyle, { fallback: true }),
+];
 
 function sqlDialect(driver: DriverKind | null) {
   switch (driver) {
@@ -70,6 +99,7 @@ export default function SqlEditor({
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const langCompartment = useRef(new Compartment());
+  const themeCompartment = useRef(new Compartment());
   // Keep latest callbacks without recreating the editor.
   const cbRef = useRef({ onChange, onRunStatement, onRunAll });
   cbRef.current = { onChange, onRunStatement, onRunAll };
@@ -100,8 +130,9 @@ export default function SqlEditor({
         autocompletion(),
         highlightActiveLine(),
         highlightSelectionMatches(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        darkTheme,
+        themeCompartment.current.of(
+          themeFor(window.matchMedia("(prefers-color-scheme: dark)").matches),
+        ),
         keymap.of([
           {
             key: "Mod-Enter",
@@ -131,7 +162,15 @@ export default function SqlEditor({
 
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
+
+    // Follow the OS appearance live — no restart needed on theme change.
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onScheme = () =>
+      view.dispatch({ effects: themeCompartment.current.reconfigure(themeFor(mq.matches)) });
+    mq.addEventListener("change", onScheme);
+
     return () => {
+      mq.removeEventListener("change", onScheme);
       view.destroy();
       viewRef.current = null;
     };

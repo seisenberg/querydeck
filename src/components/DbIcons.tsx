@@ -80,8 +80,8 @@ const ENGINE_MARKS: Record<EngineKind, string> = {
  * full engine color when 1+ sessions are open, muted gray otherwise.
  */
 export function DbIcon({ engine, connected }: { engine: EngineKind; connected: boolean }) {
-  const color = connected ? ENGINE_COLORS[engine] : "#5b6270";
-  const textColor = connected ? "#10131a" : "#9aa1ae";
+  const color = connected ? ENGINE_COLORS[engine] : "var(--icon-muted)";
+  const textColor = connected ? "#10131a" : "var(--icon-muted-text)";
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" style={{ flexShrink: 0 }}>
       <ellipse cx="8" cy="3.4" rx="6.2" ry="2.6" fill={color} />
@@ -141,7 +141,7 @@ export function ViewIcon() {
 
 /** Console icon for the tree's console entries. */
 export function ConsoleIcon({ open }: { open: boolean }) {
-  const c = open ? "#14b8a6" : "#8b93a3";
+  const c = open ? "var(--accent)" : "var(--text-dim)";
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
       <rect x="1" y="2" width="12" height="10" rx="1.5" fill="none" stroke={c} strokeWidth="1.3" />
