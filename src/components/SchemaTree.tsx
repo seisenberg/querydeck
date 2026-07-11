@@ -137,7 +137,7 @@ const ProfileNode = memo(function ProfileNode({
       </div>
       {expanded && (
         <>
-          <ConsolesNode profileId={profile.id} />
+          <ConsolesNode profileId={profile.id} setCtx={setCtx} />
           {error && (
             <div className="tree-node" style={{ paddingLeft: 30 }}>
               <span className="msg-err" style={{ fontSize: 12 }}>
@@ -167,17 +167,72 @@ const ProfileNode = memo(function ProfileNode({
 const NO_CLOSED_CONSOLES: ConsoleFile[] = [];
 
 /** Logical "Consoles" item: open tabs plus persisted (closed) consoles. */
-function ConsolesNode({ profileId }: { profileId: string }) {
+function ConsolesNode({
+  profileId,
+  setCtx,
+}: {
+  profileId: string;
+  setCtx: (c: CtxMenu | null) => void;
+}) {
   const [open, setOpen] = useState(true);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const closed = useStore((s) => s.closedConsoles[profileId]) ?? NO_CLOSED_CONSOLES;
   const reopenConsole = useStore((s) => s.reopenConsole);
   const deleteConsole = useStore((s) => s.deleteConsole);
+  const closeTab = useStore((s) => s.closeTab);
+  const renameConsole = useStore((s) => s.renameConsole);
 
   const live = tabs.filter((t) => t.profileId === profileId);
   const total = live.length + closed.length;
+
+  const renameInput = (id: string, current: string) => (
+    <input
+      autoFocus
+      defaultValue={current}
+      className="rename-input"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          renameConsole(id, (e.target as HTMLInputElement).value);
+          setRenamingId(null);
+        } else if (e.key === "Escape") {
+          setRenamingId(null);
+        }
+      }}
+      onBlur={() => setRenamingId(null)}
+    />
+  );
+
+  const consoleCtx =
+    (id: string, title: string, isLive: boolean, file?: ConsoleFile) =>
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const items: CtxMenu["items"] = [
+        isLive
+          ? { label: "Show console", action: () => setActiveTab(id) }
+          : { label: "Reopen console", action: () => file && reopenConsole(file) },
+        { label: "Rename…", action: () => setRenamingId(id) },
+      ];
+      if (isLive) {
+        items.push({ label: "Close console", action: () => closeTab(id) });
+      } else {
+        items.push({
+          label: "Delete saved console…",
+          danger: true,
+          action: () => {
+            if (window.confirm(`Delete saved console "${title}" and its log?`)) {
+              void deleteConsole(profileId, id);
+            }
+          },
+        });
+      }
+      setCtx({ x: e.clientX, y: e.clientY, items });
+    };
 
   return (
     <>
@@ -194,13 +249,17 @@ function ConsolesNode({ profileId }: { profileId: string }) {
             className={`tree-node ${t.id === activeTabId ? "active-console" : ""}`}
             style={{ paddingLeft: 40 }}
             onClick={() => setActiveTab(t.id)}
-            title={`${t.title} — open${t.database ? ` · ${t.database}` : ""}`}
+            onContextMenu={consoleCtx(t.id, t.title, true)}
+            title={`${t.title} — open · right-click to rename`}
           >
             <span className="icon">
               <ConsoleIcon open />
             </span>
-            <span className="label">{t.title}</span>
-            {t.database && <span className="meta">{t.database}</span>}
+            {renamingId === t.id ? (
+              renameInput(t.id, t.title)
+            ) : (
+              <span className="label">{t.title}</span>
+            )}
           </div>
         ))}
       {open &&
@@ -210,13 +269,17 @@ function ConsolesNode({ profileId }: { profileId: string }) {
             className="tree-node closed-console"
             style={{ paddingLeft: 40 }}
             onClick={() => reopenConsole(c)}
+            onContextMenu={consoleCtx(c.id, c.title, false, c)}
             title={`${c.title} — closed · click to reopen\n${c.sql.slice(0, 200)}`}
           >
             <span className="icon">
               <ConsoleIcon open={false} />
             </span>
-            <span className="label">{c.title}</span>
-            {c.database && <span className="meta">{c.database}</span>}
+            {renamingId === c.id ? (
+              renameInput(c.id, c.title)
+            ) : (
+              <span className="label">{c.title}</span>
+            )}
             <span className="spacer" />
             <span className="hover-actions">
               <button

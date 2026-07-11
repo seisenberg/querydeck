@@ -116,6 +116,8 @@ interface Store {
   /** "+" / ⌘T: with no consoles open, reopen the most recent saved one;
    * only fall back to the connection picker when none exist at all. */
   newConsoleRequested(): void;
+  /** Rename an open console tab, or a saved (closed) console file. */
+  renameConsole(id: string, title: string): void;
   setSidebarWidth(w: number): void;
   toggleSidebar(): void;
   setEditorFrac(f: number): void;
@@ -485,6 +487,30 @@ export const useStore = create<Store>((set, get) => {
         }
       }
       set({ connectionPicker: true });
+    },
+
+    renameConsole(id, title) {
+      const clean = title.trim();
+      if (!clean) return;
+      const s = get();
+      if (s.tabs.some((t) => t.id === id)) {
+        set((st) => ({
+          tabs: st.tabs.map((t) => (t.id === id ? { ...t, title: clean } : t)),
+        }));
+        schedulePersist(get);
+        return;
+      }
+      // Saved console: rewrite its file with the new title.
+      for (const files of Object.values(s.closedConsoles)) {
+        const file = files.find((c) => c.id === id);
+        if (file) {
+          void api
+            .consoleSave({ ...file, title: clean })
+            .then(() => get().loadClosedConsoles())
+            .catch((e) => get().showToast(errMessage(e)));
+          return;
+        }
+      }
     },
 
     setSidebarWidth(w) {

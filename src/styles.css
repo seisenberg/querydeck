@@ -339,10 +339,22 @@ input[type="radio"] {
   height: var(--topbar-h);
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
   flex-shrink: 0;
   user-select: none;
   -webkit-user-select: none;
+}
+/* Only the tab list scrolls; the "+" button stays anchored on the left. */
+.tabbar .tabs-scroll {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+.tabbar .new-tab {
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
 }
 .tabbar .tab {
   display: flex;
@@ -1072,6 +1084,12 @@ input[type="radio"] {
 /* console entries in the tree */
 .tree-node.active-console {
   background: var(--sel);
+}
+.tree-node .rename-input {
+  font-size: 12.5px;
+  padding: 1px 5px;
+  min-width: 0;
+  width: 140px;
 }
 .tree-node.closed-console .label {
   color: var(--text-dim);
