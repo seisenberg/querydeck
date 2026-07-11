@@ -106,6 +106,7 @@ interface Store {
 
   addTab(profileId?: string | null, sql?: string, autorun?: boolean): string;
   closeTab(id: string): void;
+  moveTab(id: string, toIndex: number): void;
   reopenConsole(file: ConsoleFile): void;
   deleteConsole(profileId: string, consoleId: string): Promise<void>;
   setActiveTab(id: string): void;
@@ -320,6 +321,18 @@ export const useStore = create<Store>((set, get) => {
         s.activeTabId === id ? tabs[Math.max(0, s.tabs.findIndex((t) => t.id === id) - 1)].id : s.activeTabId;
       set({ tabs, activeTabId });
       void get().refreshSessions();
+    },
+
+    moveTab(id, toIndex) {
+      set((s) => {
+        const from = s.tabs.findIndex((t) => t.id === id);
+        const to = Math.max(0, Math.min(s.tabs.length - 1, toIndex));
+        if (from === -1 || from === to) return {};
+        const tabs = [...s.tabs];
+        const [moved] = tabs.splice(from, 1);
+        tabs.splice(to, 0, moved);
+        return { tabs };
+      });
     },
 
     reopenConsole(file) {

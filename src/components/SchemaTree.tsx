@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ConnectionProfile, ConsoleFile, TableInfo } from "../api";
 import { useStore } from "../store";
 import { ConsoleIcon, DbIcon, Expander, TableIcon, ViewIcon, engineOf } from "./DbIcons";
+import { dragRegionMouseDown } from "./TabBar";
 
 interface CtxMenu {
   x: number;
@@ -27,8 +28,8 @@ export default function SchemaTree() {
 
   return (
     <>
-      <div className="sidebar-header" data-tauri-drag-region>
-        <span data-tauri-drag-region>Connections</span>
+      <div className="sidebar-header" onMouseDown={dragRegionMouseDown}>
+        <span className="sidebar-title">Connections</span>
         <span className="actions">
           <button className="small ghost" title="New connection" onClick={() => openConnectionModal()}>
             +

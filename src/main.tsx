@@ -43,6 +43,16 @@ class CrashBoundary extends React.Component<
   }
 }
 
+/** Kill the WebView's default context menu (Reload / Inspect Element…) —
+ * it reads as a web page, not a native app. Plain text inputs keep the
+ * system text menu; everywhere else only QueryDeck's own menus appear
+ * (their handlers run before this and open regardless of preventDefault). */
+window.addEventListener("contextmenu", (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t?.closest("input, textarea")) return;
+  e.preventDefault();
+});
+
 window.addEventListener("error", (e) => {
   const el = document.getElementById("crash-banner") ?? document.createElement("div");
   el.id = "crash-banner";
