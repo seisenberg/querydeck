@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "./store";
 import HistoryModal from "./components/HistoryModal";
 import ConnectionPicker from "./components/ConnectionPicker";
@@ -37,11 +38,18 @@ export default function App() {
   }, [init]);
 
   // Native menubar events: History → ⌘Y, File → SSH Tunnels… / Database Drivers…
+  // ⌘W (File → Close Console) closes the active console; with none left it
+  // closes the window itself. ⌘Q stays the stock Quit item.
   useEffect(() => {
     const subs = [
       listen("open-history", () => setHistoryModal(true)),
       listen("open-tunnels", () => setTunnelsModal(true)),
       listen("open-drivers", () => setDriversModal(true)),
+      listen("close-console", () => {
+        const s = useStore.getState();
+        if (s.activeTabId) s.closeTab(s.activeTabId);
+        else void getCurrentWindow().close();
+      }),
     ];
     return () => {
       for (const s of subs) void s.then((f) => f());
@@ -77,6 +85,14 @@ export default function App() {
               <QueryTab tab={t} active={t.id === activeTabId} />
             </div>
           ))}
+          {tabs.length === 0 && (
+            <div className="placeholder" style={{ flex: 1, flexDirection: "column" }}>
+              <div>No consoles open.</div>
+              <button className="primary" onClick={() => setConnectionPicker(true)}>
+                New console (⌘T)
+              </button>
+            </div>
+          )}
         </div>
         <StatusBar />
       </main>

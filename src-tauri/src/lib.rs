@@ -612,6 +612,37 @@ async fn console_delete(profile_id: String, console_id: String) -> AppResult<()>
         .map_err(|e| AppError::internal(e.to_string()))?
 }
 
+// ----------------------------------------------------------- session state --
+
+fn session_state_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("QueryDeck")
+        .join("session.json")
+}
+
+/// Persist the open-console layout (opaque JSON owned by the frontend) so a
+/// relaunch restores the same set of consoles.
+#[tauri::command]
+async fn session_state_save(json: String) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = session_state_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(AppError::from)?;
+        }
+        std::fs::write(&path, json).map_err(AppError::from)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn session_state_load() -> AppResult<Option<String>> {
+    tauri::async_runtime::spawn_blocking(move || Ok(std::fs::read_to_string(session_state_path()).ok()))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
 // ----------------------------------------------------------------- tunnels --
 
 #[tauri::command]
@@ -721,15 +752,34 @@ pub fn run() {
                 .unwrap_or(items.len());
             menu.insert(&history_menu, window_pos)?;
 
+            // ⌘W belongs to "close the current console tab" (and only closes
+            // the window once no consoles remain) — drop the predefined
+            // Close Window item so its accelerator doesn't shadow ours.
+            if let Some(MenuItemKind::Submenu(window_menu)) = items
+                .iter()
+                .find(|i| matches!(i, MenuItemKind::Submenu(s) if s.text().ok().as_deref() == Some("Window")))
+            {
+                let wi = window_menu.items()?;
+                if let Some(pos) = wi.iter().position(
+                    |i| matches!(i, MenuItemKind::Predefined(p) if p.text().ok().as_deref() == Some("Close Window")),
+                ) {
+                    let _ = window_menu.remove_at(pos);
+                }
+            }
+
             // Tunnels & drivers live under File (sidebar buttons were removed).
             if let Some(MenuItemKind::Submenu(file_menu)) = items
                 .iter()
                 .find(|i| matches!(i, MenuItemKind::Submenu(s) if s.text().ok().as_deref() == Some("File")))
             {
+                let close_console = MenuItemBuilder::with_id("close-console", "Close Console")
+                    .accelerator("CmdOrCtrl+W")
+                    .build(app)?;
                 let tunnels_item =
                     MenuItemBuilder::with_id("show-tunnels", "SSH Tunnels…").build(app)?;
                 let drivers_item =
                     MenuItemBuilder::with_id("show-drivers", "Database Drivers…").build(app)?;
+                file_menu.prepend(&close_console)?;
                 file_menu.append(&PredefinedMenuItem::separator(app)?)?;
                 file_menu.append(&tunnels_item)?;
                 file_menu.append(&drivers_item)?;
@@ -747,6 +797,9 @@ pub fn run() {
                     }
                     "show-drivers" => {
                         let _ = app.emit("open-drivers", ());
+                    }
+                    "close-console" => {
+                        let _ = app.emit("close-console", ());
                     }
                     _ => {}
                 }
@@ -780,6 +833,8 @@ pub fn run() {
             console_save,
             console_list,
             console_delete,
+            session_state_save,
+            session_state_load,
             tunnels_list,
             tunnel_save,
             tunnel_delete,

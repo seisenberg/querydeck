@@ -306,6 +306,9 @@ export const api = {
   databasesList: (profileId: string) =>
     invoke<string[]>("databases_list", { profileId }),
 
+  sessionStateSave: (json: string) => invoke<void>("session_state_save", { json }),
+  sessionStateLoad: () => invoke<string | null>("session_state_load"),
+
   consoleSave: (console: ConsoleFile) => invoke<void>("console_save", { console }),
   consoleList: (profileId?: string) =>
     invoke<ConsoleFile[]>("console_list", { profileId: profileId || null }),

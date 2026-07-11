@@ -98,8 +98,10 @@ body,
 
 :root {
   /* One height for the sidebar header and the tab strip so the two top
-     bars read as a single aligned titlebar row. */
-  --topbar-h: 38px;
+     bars read as a single aligned titlebar row. On macOS the traffic
+     lights are positioned (tauri.macos.conf.json) to sit dead-center in
+     this strip. */
+  --topbar-h: 32px;
 }
 
 body {
@@ -958,7 +960,8 @@ input[type="radio"] {
  * webview, so inset the sidebar header and let it (and the tab strip)
  * act as the window drag region. */
 :root[data-platform="mac"] .sidebar-header {
-  padding-left: 78px;
+  /* Clear the traffic lights (x=12, ~12px buttons, 8px gaps → ends ≈64px). */
+  padding-left: 72px;
 }
 
 /* toolbar connection label */

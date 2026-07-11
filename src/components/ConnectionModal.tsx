@@ -162,6 +162,8 @@ export default function ConnectionModal() {
       await api.profileSave(profile);
       await loadProfiles();
       closeConnectionModal();
+      // A brand-new connection goes straight to work: open its first console.
+      if (!editing) useStore.getState().addTab(profile.id);
     } catch (e) {
       setTestMsg({ ok: false, text: errMessage(e) });
     } finally {

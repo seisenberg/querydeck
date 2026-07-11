@@ -82,7 +82,7 @@ interface Store {
   closedConsoles: Record<string, ConsoleFile[]>;
 
   tabs: TabState[];
-  activeTabId: string;
+  activeTabId: string | null;
 
   // modals
   connectionModal: { open: boolean; editing: ConnectionProfile | null; presetJar?: string };
@@ -156,6 +156,44 @@ function newTab(profileId: string | null, sql = ""): TabState {
 
 const MAX_LOG_ENTRIES = 300;
 
+/** Fields worth restoring across app restarts — everything runtime
+ * (results, log, running flags) starts fresh. */
+interface PersistedTab {
+  id: string;
+  title: string;
+  profileId: string | null;
+  database: string | null;
+  sql: string;
+  maxRows: number;
+}
+
+interface PersistedSession {
+  tabs: PersistedTab[];
+  activeTabId: string | null;
+}
+
+let persistTimer: number | undefined;
+/** Debounced write of the open-console layout, so quitting and relaunching
+ * brings back the same set of consoles. */
+function schedulePersist(get: () => { tabs: TabState[]; activeTabId: string | null }) {
+  window.clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    const s = get();
+    const snapshot: PersistedSession = {
+      tabs: s.tabs.map((t) => ({
+        id: t.id,
+        title: t.title,
+        profileId: t.profileId,
+        database: t.database,
+        sql: t.sql,
+        maxRows: t.maxRows,
+      })),
+      activeTabId: s.activeTabId,
+    };
+    void api.sessionStateSave(JSON.stringify(snapshot)).catch(() => undefined);
+  }, 400);
+}
+
 function nowTime(): string {
   return new Date().toLocaleTimeString([], { hour12: false });
 }
@@ -166,7 +204,6 @@ function logPreview(sql: string): string {
 }
 
 export const useStore = create<Store>((set, get) => {
-  const first = newTab(null);
   return {
     profiles: [],
     catalogs: {},
@@ -178,8 +215,8 @@ export const useStore = create<Store>((set, get) => {
     sessions: {},
     closedConsoles: {},
 
-    tabs: [first],
-    activeTabId: first.id,
+    tabs: [],
+    activeTabId: null,
 
     connectionModal: { open: false, editing: null },
     ddlModal: null,
@@ -193,6 +230,36 @@ export const useStore = create<Store>((set, get) => {
 
     async init() {
       await get().loadProfiles();
+
+      // Restore the console layout from the previous run (empty stays empty).
+      try {
+        const raw = await api.sessionStateLoad();
+        if (raw) {
+          const saved = JSON.parse(raw) as PersistedSession;
+          const profileIds = new Set(get().profiles.map((p) => p.id));
+          const tabs = (saved.tabs ?? [])
+            .filter((t) => !t.profileId || profileIds.has(t.profileId))
+            .map((t) => ({
+              ...newTab(t.profileId ?? null, t.sql ?? ""),
+              id: t.id,
+              title: t.title,
+              database: t.database ?? null,
+              maxRows: t.maxRows ?? 1_000,
+            }));
+          // Continue numbering after the restored consoles.
+          const maxN = tabs.reduce((m, t) => {
+            const n = /^console (\d+)$/.exec(t.title);
+            return n ? Math.max(m, Number(n[1])) : m;
+          }, 0);
+          tabCounter = Math.max(tabCounter, maxN);
+          const activeTabId =
+            tabs.find((t) => t.id === saved.activeTabId)?.id ?? tabs[tabs.length - 1]?.id ?? null;
+          set({ tabs, activeTabId });
+        }
+      } catch {
+        // a corrupt session file just means starting empty
+      }
+
       void get().loadClosedConsoles();
       void get().refreshSessions();
       try {
@@ -293,6 +360,7 @@ export const useStore = create<Store>((set, get) => {
       if (autorun && profileId) {
         void get().runQuery(t.id);
       }
+      schedulePersist(get);
       return t.id;
     },
 
@@ -315,12 +383,16 @@ export const useStore = create<Store>((set, get) => {
           .catch(() => undefined);
       }
 
-      const remaining = s.tabs.filter((t) => t.id !== id);
-      const tabs = remaining.length ? remaining : [newTab(tab.profileId)];
+      // The tab list may go empty — the app shows an empty state and ⌘W
+      // then closes the window instead of a console.
+      const tabs = s.tabs.filter((t) => t.id !== id);
       const activeTabId =
-        s.activeTabId === id ? tabs[Math.max(0, s.tabs.findIndex((t) => t.id === id) - 1)].id : s.activeTabId;
+        s.activeTabId === id
+          ? (tabs[Math.max(0, s.tabs.findIndex((t) => t.id === id) - 1)]?.id ?? null)
+          : s.activeTabId;
       set({ tabs, activeTabId });
       void get().refreshSessions();
+      schedulePersist(get);
     },
 
     moveTab(id, toIndex) {
@@ -333,6 +405,7 @@ export const useStore = create<Store>((set, get) => {
         tabs.splice(to, 0, moved);
         return { tabs };
       });
+      schedulePersist(get);
     },
 
     reopenConsole(file) {
@@ -362,6 +435,7 @@ export const useStore = create<Store>((set, get) => {
       }));
       void api.consoleSave({ ...file, closed: false }).catch(() => undefined);
       void get().loadDatabases(file.profileId);
+      schedulePersist(get);
     },
 
     async deleteConsole(profileId, consoleId) {
@@ -375,12 +449,14 @@ export const useStore = create<Store>((set, get) => {
 
     setActiveTab(id) {
       set({ activeTabId: id });
+      schedulePersist(get);
     },
 
     setTabSql(id, sql) {
       set((s) => ({
         tabs: s.tabs.map((t) => (t.id === id ? { ...t, sql } : t)),
       }));
+      schedulePersist(get);
     },
 
     setTabProfile(id, profileId) {
@@ -405,12 +481,14 @@ export const useStore = create<Store>((set, get) => {
         tabs: s.tabs.map((t) => (t.id === id ? { ...t, database } : t)),
       }));
       void get().refreshSessions();
+      schedulePersist(get);
     },
 
     setTabLimit(id, maxRows) {
       set((s) => ({
         tabs: s.tabs.map((t) => (t.id === id ? { ...t, maxRows } : t)),
       }));
+      schedulePersist(get);
     },
 
     setActiveResult(id, idx) {
