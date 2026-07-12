@@ -33,3 +33,29 @@ Next: chunk 6 (native engines: mssql/tiberius, redshift, mariadb, clickhouse).
 
 Next: live testing in the real app (tab drag, modal, formatter, search,
 lint, ClickHouse play endpoint, startup/shutdown timing).
+
+### Verification pass (browser preview w/ mock backend + live tests)
+- Open Console modal: sections + saved consoles ✓; tab drag: order changes,
+  no stuck dim style ✓; per-connection numbering ✓.
+- Lint: second SELECT red-squiggled, "custmers" dotted (spell), valid words
+  clean ✓ (verified via cm-lintRange DOM classes).
+- Autocomplete: history words + whole statements below caret; ArrowDown +
+  Tab/Enter accept ✓.
+- Reformat (⌘⌥L event): keywords uppercased, 2-space indent ✓; Formatter
+  Settings modal with live preview ✓.
+- Search panel: iI/.* toggles (regex found 5 matches for o\.\w+), close
+  button at end, Esc closes ✓.
+- Activity: icon idle→both states, "3 running" count, modal with QUERY/
+  BACKGROUND badges, elapsed, kill switch ✓ (mock artifact fixed: mock must
+  return fresh arrays like real IPC).
+- Tree: Other objects → schema → kind grouping collapsed ✓; connection
+  drag-reorder w/ click suppression ✓; delete popover w/ solid-red Delete ✓;
+  sidebar min 240 ✓; collapsed rail clean (no stray border) ✓.
+- ClickHouse NATIVE driver live vs play.clickhouse.com: SELECT (typed 42 /
+  hello / 26.7.1.459), databases [blogs, default, git_clickhouse, mgbench],
+  catalog 4 schemas ✓ (cargo test --test live_endpoints -- --ignored).
+- Snowflake/Redshift: no public endpoints; user to test w/ private creds +
+  NetSuite JDBC.
+- Env limitation: screencapture can't capture window contents (no Screen
+  Recording permission) and Apple Events denied — native-window driving is
+  unavailable; browser preview + mock covers UI, Rust tests cover backend.
