@@ -123,8 +123,7 @@ interface Store {
   addTab(profileId?: string | null, sql?: string, autorun?: boolean): string;
   closeTab(id: string): void;
   moveTab(id: string, toIndex: number): void;
-  /** "+" / ⌘T: with no consoles open, reopen the most recent saved one;
-   * only fall back to the connection picker when none exist at all. */
+  /** "+" / ⌘T: always opens the Open Console picker modal (new or saved). */
   newConsoleRequested(): void;
   /** Rename an open console tab, or a saved (closed) console file. */
   renameConsole(id: string, title: string): void;
@@ -503,15 +502,6 @@ export const useStore = create<Store>((set, get) => {
     },
 
     newConsoleRequested() {
-      const s = get();
-      if (s.tabs.length === 0) {
-        const all = Object.values(s.closedConsoles).flat();
-        if (all.length) {
-          const latest = all.reduce((a, b) => (b.updatedAt > a.updatedAt ? b : a));
-          get().reopenConsole(latest);
-          return;
-        }
-      }
       set({ connectionPicker: true });
     },
 

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store";
 
@@ -25,6 +25,32 @@ export default function TabBar() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ id: string; startX: number; moved: boolean } | null>(null);
+  // State (not just the ref) so the drop re-renders and clears the lifted
+  // style — previously the class lingered because nothing re-rendered.
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const positions = useRef<Map<string, number>>(new Map());
+
+  // FLIP: when reordering displaces tabs, slide them from their old slot to
+  // the new one. offsetLeft is scroll-independent. The dragged tab itself is
+  // skipped — it should snap to the slot under the pointer.
+  useLayoutEffect(() => {
+    const prev = positions.current;
+    const next = new Map<string, number>();
+    const nodes = scrollRef.current?.querySelectorAll<HTMLElement>(".tab") ?? [];
+    nodes.forEach((n) => {
+      const id = n.dataset.tabId;
+      if (!id) return;
+      next.set(id, n.offsetLeft);
+      const old = prev.get(id);
+      if (old != null && old !== n.offsetLeft && id !== drag.current?.id) {
+        n.animate(
+          [{ transform: `translateX(${old - n.offsetLeft}px)` }, { transform: "translateX(0)" }],
+          { duration: 140, easing: "ease-out" },
+        );
+      }
+    });
+    positions.current = next;
+  });
 
   const onTabPointerDown = (id: string) => (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -38,7 +64,10 @@ export default function TabBar() {
     const d = drag.current;
     if (!d || !(e.buttons & 1) || !scrollRef.current) return;
     if (!d.moved && Math.abs(e.clientX - d.startX) < 5) return;
-    d.moved = true;
+    if (!d.moved) {
+      d.moved = true;
+      setDraggingId(d.id);
+    }
     e.preventDefault();
     // Target slot: first tab whose midpoint is right of the pointer.
     const nodes = Array.from(scrollRef.current.querySelectorAll<HTMLElement>(".tab"));
@@ -50,8 +79,9 @@ export default function TabBar() {
     moveTab(d.id, to);
   };
 
-  const onTabPointerUp = () => {
+  const endDrag = () => {
     drag.current = null;
+    setDraggingId(null);
   };
 
   return (
@@ -60,7 +90,7 @@ export default function TabBar() {
       <button
         className="new-tab"
         onClick={() => newConsoleRequested()}
-        title="New console tab (⌘T)"
+        title="Open console (⌘T)"
       >
         +
       </button>
@@ -70,12 +100,14 @@ export default function TabBar() {
           return (
             <div
               key={t.id}
+              data-tab-id={t.id}
               className={`tab ${t.id === activeTabId ? "active" : ""} ${
-                drag.current?.id === t.id && drag.current.moved ? "dragging" : ""
+                draggingId === t.id ? "dragging" : ""
               }`}
               onPointerDown={onTabPointerDown(t.id)}
               onPointerMove={onTabPointerMove}
-              onPointerUp={onTabPointerUp}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag}
               onAuxClick={(e) => {
                 if (e.button === 1) closeTab(t.id);
               }}
