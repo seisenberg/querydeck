@@ -256,6 +256,7 @@ export const api = {
     invoke<void>("profile_save", { profile }),
   profileDelete: (profileId: string) =>
     invoke<void>("profile_delete", { profileId }),
+  profilesReorder: (ids: string[]) => invoke<void>("profiles_reorder", { ids }),
   connectionTest: (profile: ConnectionProfile) =>
     invoke<string>("connection_test", { profile }),
 

@@ -144,6 +144,40 @@ button.primary {
 button.primary:hover {
   background: var(--accent);
 }
+/* Solid red: the "yes, really" button inside destructive confirms. */
+button.danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+button.danger-solid:hover {
+  filter: brightness(1.1);
+}
+
+/* Anchored confirmation popover (e.g. connection delete). */
+.popover-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.popover {
+  position: absolute;
+  z-index: 30;
+  width: 260px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+.popover-above {
+  bottom: calc(100% + 8px);
+  left: 0;
+}
+.popover-title {
+  font-weight: 600;
+}
+
 button.danger {
   color: var(--danger);
 }
@@ -198,7 +232,9 @@ input[type="radio"] {
 /* ---------------------------------------------------------- sidebar ------ */
 .sidebar {
   width: 280px; /* inline-overridden by the persisted width */
-  min-width: 180px;
+  /* Wide enough that the header title, the traffic lights and the +/«
+   * buttons can never collide. */
+  min-width: 240px;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
@@ -215,7 +251,7 @@ input[type="radio"] {
 .sidebar-rail .rail-top {
   height: var(--topbar-h);
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
+  /* No border here: it drew a stray line right behind the expand button. */
 }
 .sidebar-rail .rail-expand {
   margin: 8px auto 0;
@@ -253,28 +289,37 @@ input[type="radio"] {
   font-weight: 600;
   flex-shrink: 0;
 }
-/* The title is inert (clicks pass through to the header drag region) and
- * centered across the strip like a native titlebar. */
-.sidebar-header {
-  position: relative;
-}
+/* The title is inert (clicks pass through to the header drag region) and a
+ * real flex item, so it truncates instead of ever sliding under the traffic
+ * lights or the +/« buttons at narrow widths. */
 .sidebar-header .sidebar-title {
   pointer-events: none;
-  position: absolute;
-  left: 0;
-  right: 0;
+  flex: 1;
+  min-width: 0;
   text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sidebar-header .actions {
   display: flex;
   gap: 4px;
-  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .tree {
   flex: 1;
   overflow: auto;
   padding: 4px 0;
+}
+
+/* Connection row being drag-reordered: lifted look, like tab dragging. */
+.tree-node.dragging-profile {
+  background: var(--bg-elevated);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  position: relative;
+  z-index: 2;
+  touch-action: none;
 }
 
 .tree-node {

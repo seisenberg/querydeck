@@ -81,6 +81,7 @@ export default function ConnectionModal() {
   );
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   useEffect(() => {
     api.tunnelsList().then(setTunnels).catch(() => undefined);
@@ -113,13 +114,7 @@ export default function ConnectionModal() {
 
   const deleteProfile = async () => {
     if (!editing) return;
-    if (
-      !window.confirm(
-        `Delete connection "${editing.name}"?\n\nThis also deletes its saved consoles and their local query logs/history files. This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+    setConfirmingDelete(false);
     setBusy(true);
     try {
       await api.profileDelete(editing.id);
@@ -498,9 +493,36 @@ export default function ConnectionModal() {
             {busy ? "…" : "Test connection"}
           </button>
           {editing && (
-            <button className="danger" onClick={() => void deleteProfile()} disabled={busy}>
-              Delete…
-            </button>
+            <span className="popover-anchor">
+              <button
+                className="danger"
+                onClick={() => setConfirmingDelete((v) => !v)}
+                disabled={busy}
+              >
+                Delete…
+              </button>
+              {confirmingDelete && (
+                <div className="popover popover-above" onClick={(e) => e.stopPropagation()}>
+                  <div className="popover-title">Delete “{editing.name}”?</div>
+                  <p className="hint" style={{ margin: "6px 0 10px" }}>
+                    Its consoles, queries and logs will be permanently removed. This
+                    cannot be undone.
+                  </p>
+                  <div className="form-row-inline" style={{ justifyContent: "flex-end" }}>
+                    <button className="small" onClick={() => setConfirmingDelete(false)}>
+                      Cancel
+                    </button>
+                    <button
+                      className="small danger-solid"
+                      onClick={() => void deleteProfile()}
+                      disabled={busy}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              )}
+            </span>
           )}
           <span className="sep" />
           <button onClick={closeConnectionModal}>Cancel</button>

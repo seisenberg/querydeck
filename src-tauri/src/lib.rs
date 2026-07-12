@@ -64,6 +64,20 @@ fn profile_save(state: State<'_, Arc<AppState>>, profile: ConnectionProfile) -> 
     state.save_profiles()
 }
 
+/// Persist a new ordering of the connection list (drag-reorder in the tree).
+/// Profiles missing from `ids` keep their relative order at the end, so a
+/// stale UI can never drop a connection.
+#[tauri::command]
+fn profiles_reorder(state: State<'_, Arc<AppState>>, ids: Vec<String>) -> AppResult<()> {
+    {
+        let mut profiles = state.profiles.lock();
+        profiles.sort_by_key(|p| {
+            ids.iter().position(|id| *id == p.id).unwrap_or(usize::MAX)
+        });
+    }
+    state.save_profiles()
+}
+
 #[tauri::command]
 async fn profile_delete(state: State<'_, Arc<AppState>>, profile_id: String) -> AppResult<()> {
     let state = state.inner().clone();
@@ -873,6 +887,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             profiles_list,
             profile_save,
+            profiles_reorder,
             profile_delete,
             connection_test,
             query_run,

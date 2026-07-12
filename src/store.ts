@@ -112,6 +112,9 @@ interface Store {
 
   init(): Promise<void>;
   loadProfiles(): Promise<void>;
+  /** Reorder the connection list (drag in the tree); persisted backend-side. */
+  moveProfile(id: string, toIndex: number): void;
+  persistProfileOrder(): void;
   loadCatalog(profileId: string, refresh?: boolean): Promise<void>;
   loadObjects(profileId: string): Promise<void>;
   toggleExpanded(profileId: string): void;
@@ -322,7 +325,7 @@ export const useStore = create<Store>((set, get) => {
           set({ tabs, activeTabId });
           if (saved.ui) {
             set({
-              sidebarWidth: Math.max(180, Math.min(560, saved.ui.sidebarWidth ?? 280)),
+              sidebarWidth: Math.max(240, Math.min(560, saved.ui.sidebarWidth ?? 280)),
               sidebarCollapsed: !!saved.ui.sidebarCollapsed,
               editorFrac: Math.max(0.12, Math.min(0.85, saved.ui.editorFrac ?? 0.38)),
             });
@@ -395,6 +398,24 @@ export const useStore = create<Store>((set, get) => {
       } catch (e) {
         get().showToast(errMessage(e));
       }
+    },
+
+    moveProfile(id, toIndex) {
+      set((s) => {
+        const from = s.profiles.findIndex((p) => p.id === id);
+        const to = Math.max(0, Math.min(s.profiles.length - 1, toIndex));
+        if (from === -1 || from === to) return {};
+        const profiles = [...s.profiles];
+        const [moved] = profiles.splice(from, 1);
+        profiles.splice(to, 0, moved);
+        return { profiles };
+      });
+    },
+
+    persistProfileOrder() {
+      void api
+        .profilesReorder(get().profiles.map((p) => p.id))
+        .catch((e) => get().showToast(errMessage(e)));
     },
 
     async loadCatalog(profileId, refresh = false) {
@@ -530,7 +551,7 @@ export const useStore = create<Store>((set, get) => {
     },
 
     setSidebarWidth(w) {
-      set({ sidebarWidth: Math.max(180, Math.min(560, w)) });
+      set({ sidebarWidth: Math.max(240, Math.min(560, w)) });
       schedulePersist(get);
     },
 

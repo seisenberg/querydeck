@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ConnectionProfile, ConsoleFile, DbObject, TableInfo } from "../api";
 import { useStore } from "../store";
 import { ConsoleIcon, DbIcon, Expander, TableIcon, ViewIcon, engineOf } from "./DbIcons";
@@ -10,11 +10,91 @@ interface CtxMenu {
   items: { label: string; danger?: boolean; action: () => void }[];
 }
 
+/** Drag-to-reorder plumbing handed down to each profile row. */
+export interface ProfileDrag {
+  draggingId: string | null;
+  onPointerDown: (id: string) => (e: React.PointerEvent) => void;
+  onPointerMove: (e: React.PointerEvent) => void;
+  onPointerUp: () => void;
+  /** True exactly once right after a drag ended — swallow the click. */
+  consumeClickSuppression: () => boolean;
+}
+
 export default function SchemaTree() {
   const profiles = useStore((s) => s.profiles);
   const openConnectionModal = useStore((s) => s.openConnectionModal);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const moveProfile = useStore((s) => s.moveProfile);
+  const persistProfileOrder = useStore((s) => s.persistProfileOrder);
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
+
+  const treeRef = useRef<HTMLDivElement>(null);
+  const dragProf = useRef<{ id: string; startY: number; moved: boolean } | null>(null);
+  const suppressClick = useRef(false);
+  const [draggingProfileId, setDraggingProfileId] = useState<string | null>(null);
+  const profPositions = useRef<Map<string, number>>(new Map());
+
+  // FLIP: displaced connection rows slide to their new slot on reorder.
+  useLayoutEffect(() => {
+    const prev = profPositions.current;
+    const next = new Map<string, number>();
+    const nodes = treeRef.current?.querySelectorAll<HTMLElement>("[data-profile-id]") ?? [];
+    nodes.forEach((n) => {
+      const id = n.dataset.profileId;
+      if (!id) return;
+      next.set(id, n.offsetTop);
+      const old = prev.get(id);
+      if (old != null && old !== n.offsetTop && id !== dragProf.current?.id) {
+        n.animate(
+          [{ transform: `translateY(${old - n.offsetTop}px)` }, { transform: "translateY(0)" }],
+          { duration: 140, easing: "ease-out" },
+        );
+      }
+    });
+    profPositions.current = next;
+  });
+
+  const profileDrag: ProfileDrag = {
+    draggingId: draggingProfileId,
+    onPointerDown: (id) => (e) => {
+      if (e.button !== 0) return;
+      dragProf.current = { id, startY: e.clientY, moved: false };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    },
+    onPointerMove: (e) => {
+      const d = dragProf.current;
+      if (!d || !(e.buttons & 1) || !treeRef.current) return;
+      if (!d.moved && Math.abs(e.clientY - d.startY) < 5) return;
+      if (!d.moved) {
+        d.moved = true;
+        setDraggingProfileId(d.id);
+      }
+      e.preventDefault();
+      // Target slot: first connection row whose midpoint is below the pointer.
+      const nodes = Array.from(
+        treeRef.current.querySelectorAll<HTMLElement>("[data-profile-id]"),
+      );
+      let to = nodes.findIndex((n) => {
+        const r = n.getBoundingClientRect();
+        return e.clientY < r.top + r.height / 2;
+      });
+      if (to === -1) to = nodes.length - 1;
+      moveProfile(d.id, to);
+    },
+    onPointerUp: () => {
+      if (dragProf.current?.moved) {
+        suppressClick.current = true;
+        persistProfileOrder();
+      }
+      dragProf.current = null;
+      setDraggingProfileId(null);
+    },
+    consumeClickSuppression: () => {
+      const s = suppressClick.current;
+      suppressClick.current = false;
+      return s;
+    },
+  };
 
   useEffect(() => {
     if (!ctx) return;
@@ -40,7 +120,7 @@ export default function SchemaTree() {
           </button>
         </span>
       </div>
-      <div className="tree">
+      <div className="tree" ref={treeRef}>
         {profiles.length === 0 && (
           <div className="tree-empty">
             No connections yet.
@@ -51,7 +131,7 @@ export default function SchemaTree() {
           </div>
         )}
         {profiles.map((p) => (
-          <ProfileNode key={p.id} profile={p} setCtx={setCtx} />
+          <ProfileNode key={p.id} profile={p} setCtx={setCtx} drag={profileDrag} />
         ))}
       </div>
       {ctx && (
@@ -79,9 +159,11 @@ export default function SchemaTree() {
 const ProfileNode = memo(function ProfileNode({
   profile,
   setCtx,
+  drag,
 }: {
   profile: ConnectionProfile;
   setCtx: (c: CtxMenu | null) => void;
+  drag: ProfileDrag;
 }) {
   const expanded = useStore((s) => s.expandedProfiles[profile.id]);
   const toggleExpanded = useStore((s) => s.toggleExpanded);
@@ -121,10 +203,18 @@ const ProfileNode = memo(function ProfileNode({
   return (
     <>
       <div
-        className="tree-node"
-        onClick={() => toggleExpanded(profile.id)}
+        className={`tree-node ${drag.draggingId === profile.id ? "dragging-profile" : ""}`}
+        data-profile-id={profile.id}
+        onClick={() => {
+          if (drag.consumeClickSuppression()) return;
+          toggleExpanded(profile.id);
+        }}
+        onPointerDown={drag.onPointerDown(profile.id)}
+        onPointerMove={drag.onPointerMove}
+        onPointerUp={drag.onPointerUp}
+        onPointerCancel={drag.onPointerUp}
         onContextMenu={onContext}
-        title={`${profile.name} (${profile.driver}) — ${connected ? `${openSessions} open session(s)` : "offline"}`}
+        title={`${profile.name} (${profile.driver}) — ${connected ? `${openSessions} open session(s)` : "offline"} · drag to reorder`}
       >
         <Expander expanded={!!expanded} />
         <span className="icon">
