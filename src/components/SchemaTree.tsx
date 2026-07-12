@@ -256,12 +256,17 @@ const KIND_LABELS: Record<string, string> = {
   procedure: "Procedures",
   sequence: "Sequences",
   trigger: "Triggers",
+  dictionary: "Dictionaries",
   role: "Roles",
 };
-const KIND_ORDER = ["function", "procedure", "sequence", "trigger", "role"];
+const KIND_ORDER = ["function", "procedure", "sequence", "trigger", "dictionary", "role"];
 
-/** Rarely-needed schema objects, tucked away collapsed: functions, stored
- * procedures, sequences, triggers, roles. Right-click exposes the DDL. */
+const kindLabel = (k: string) =>
+  KIND_LABELS[k] ?? k.charAt(0).toUpperCase() + k.slice(1) + "s";
+
+/** Rarely-needed schema objects, grouped database/schema → kind → item and
+ * collapsed by default — business databases carry thousands of routines, so
+ * nothing expands until asked. Right-click exposes the DDL. */
 function OtherObjectsNode({
   profileId,
   setCtx,
@@ -270,6 +275,8 @@ function OtherObjectsNode({
   setCtx: (c: CtxMenu | null) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [openSchemas, setOpenSchemas] = useState<Record<string, boolean>>({});
+  const [openKinds, setOpenKinds] = useState<Record<string, boolean>>({});
   const objects = useStore((s) => s.objectsByProfile[profileId]);
   const loading = useStore((s) => s.objectsLoading[profileId]);
   const loadObjects = useStore((s) => s.loadObjects);
@@ -303,9 +310,24 @@ function OtherObjectsNode({
     });
   };
 
-  const groups = KIND_ORDER.map(
-    (k) => [k, (objects ?? []).filter((o) => o.kind === k)] as const,
-  ).filter(([, list]) => list.length > 0);
+  // database/schema → kind → objects (cluster-level objects like roles get
+  // their own "(server)" bucket at the end).
+  const CLUSTER = "(server)";
+  const bySchema = new Map<string, Map<string, DbObject[]>>();
+  for (const o of objects ?? []) {
+    const s = o.schema ?? CLUSTER;
+    const kinds = bySchema.get(s) ?? new Map<string, DbObject[]>();
+    const list = kinds.get(o.kind) ?? [];
+    list.push(o);
+    kinds.set(o.kind, list);
+    bySchema.set(s, kinds);
+  }
+  const schemaNames = [...bySchema.keys()].sort((a, b) =>
+    a === CLUSTER ? 1 : b === CLUSTER ? -1 : a.localeCompare(b),
+  );
+
+  const countOf = (kinds: Map<string, DbObject[]>) =>
+    [...kinds.values()].reduce((n, l) => n + l.length, 0);
 
   return (
     <>
@@ -322,43 +344,93 @@ function OtherObjectsNode({
         </div>
       )}
       {open &&
-        groups.map(([kind, list]) => (
-          <div key={kind}>
-            <div className="tree-node" style={{ paddingLeft: 40, cursor: "default" }}>
-              <span className="meta">{KIND_LABELS[kind]}</span>
-            </div>
-            {list.map((o, i) => (
+        schemaNames.map((schemaName) => {
+          const kinds = bySchema.get(schemaName)!;
+          const sOpen = !!openSchemas[schemaName];
+          return (
+            <div key={schemaName}>
               <div
-                key={`${o.schema ?? ""}.${o.name}.${i}`}
                 className="tree-node"
-                style={{ paddingLeft: 56 }}
-                onContextMenu={objectCtx(o)}
-                onDoubleClick={() =>
-                  openDdl({
-                    profileId,
-                    schema: o.schema ?? "",
-                    table: o.name,
-                    kind: o.kind,
-                    detail: o.detail ?? "",
-                  })
+                style={{ paddingLeft: 40 }}
+                onClick={() =>
+                  setOpenSchemas((m) => ({ ...m, [schemaName]: !m[schemaName] }))
                 }
-                title={`${o.schema ? `${o.schema}.` : ""}${o.name}${
-                  o.detail ? ` (${o.detail})` : ""
-                } — right-click for DDL`}
               >
-                <span className="icon" style={{ color: "var(--text-dim)", fontSize: 10 }}>
-                  ƒ
-                </span>
-                <span className="label">{o.name}</span>
-                {o.detail && kind !== "trigger" && (
-                  <span className="meta" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {o.detail}
-                  </span>
-                )}
+                <Expander expanded={sOpen} />
+                <span className="icon">▤</span>
+                <span className="label">{schemaName}</span>
+                <span className="meta">{countOf(kinds)}</span>
               </div>
-            ))}
-          </div>
-        ))}
+              {sOpen &&
+                [...kinds.keys()]
+                  .sort((a, b) => {
+                    const idx = (k: string) => {
+                      const i = KIND_ORDER.indexOf(k);
+                      return i === -1 ? KIND_ORDER.length : i;
+                    };
+                    return idx(a) - idx(b) || a.localeCompare(b);
+                  })
+                  .map((kind) => {
+                    const list = kinds.get(kind)!;
+                    const kKey = `${schemaName}/${kind}`;
+                    const kOpen = !!openKinds[kKey];
+                    return (
+                      <div key={kKey}>
+                        <div
+                          className="tree-node"
+                          style={{ paddingLeft: 56 }}
+                          onClick={() =>
+                            setOpenKinds((m) => ({ ...m, [kKey]: !m[kKey] }))
+                          }
+                        >
+                          <Expander expanded={kOpen} />
+                          <span className="meta">
+                            {kindLabel(kind)} ({list.length})
+                          </span>
+                        </div>
+                        {kOpen &&
+                          list.map((o, i) => (
+                            <div
+                              key={`${o.name}.${i}`}
+                              className="tree-node"
+                              style={{ paddingLeft: 74 }}
+                              onContextMenu={objectCtx(o)}
+                              onDoubleClick={() =>
+                                openDdl({
+                                  profileId,
+                                  schema: o.schema ?? "",
+                                  table: o.name,
+                                  kind: o.kind,
+                                  detail: o.detail ?? "",
+                                })
+                              }
+                              title={`${o.schema ? `${o.schema}.` : ""}${o.name}${
+                                o.detail ? ` (${o.detail})` : ""
+                              } — double-click or right-click for DDL`}
+                            >
+                              <span
+                                className="icon"
+                                style={{ color: "var(--text-dim)", fontSize: 10 }}
+                              >
+                                ƒ
+                              </span>
+                              <span className="label">{o.name}</span>
+                              {o.detail && kind !== "trigger" && (
+                                <span
+                                  className="meta"
+                                  style={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                                >
+                                  {o.detail}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                      </div>
+                    );
+                  })}
+            </div>
+          );
+        })}
     </>
   );
 }
