@@ -4,6 +4,7 @@ mod ddl;
 mod drivers;
 mod error;
 mod history;
+mod objects;
 mod registry;
 mod sqlsplit;
 mod state;
@@ -105,7 +106,7 @@ async fn databases_list(
 ) -> AppResult<Vec<String>> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state.with_conn(&profile_id, "meta", None, |conn| conn.list_databases())
+        with_meta_retry(&state, &profile_id, None, |conn| conn.list_databases())
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
@@ -404,6 +405,26 @@ async fn session_close(
 
 // ----------------------------------------------------------------- catalog --
 
+
+/// Run a metadata operation on the shared "meta" session, transparently
+/// reconnecting once if the cached connection died (server restart, idle
+/// timeout). Queries get this via query_run's own retry; catalog/object
+/// introspection needs it too or the tree keeps showing a stale error.
+fn with_meta_retry<T>(
+    state: &Arc<AppState>,
+    profile_id: &str,
+    database: Option<&str>,
+    f: impl Fn(&mut Box<dyn drivers::DbConnection>) -> AppResult<T>,
+) -> AppResult<T> {
+    match state.with_conn(profile_id, "meta", database, &f) {
+        Err(e) if is_connection_error(&e.to_string()) => {
+            state.reset_session(profile_id, "meta");
+            state.with_conn(profile_id, "meta", database, &f)
+        }
+        r => r,
+    }
+}
+
 #[tauri::command]
 async fn catalog_get(
     state: State<'_, Arc<AppState>>,
@@ -419,7 +440,7 @@ async fn catalog_get(
     let state = state.inner().clone();
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cat = state.with_conn(&profile_id, "meta", None, |conn| conn.catalog())?;
+        let cat = with_meta_retry(&state, &profile_id, None, |conn| conn.catalog())?;
         cache.0.lock().insert(profile_id, cat.clone());
         Ok(cat)
     })
@@ -445,7 +466,7 @@ async fn ddl_get(
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let native =
-            state.with_conn(&profile_id, "meta", None, |conn| conn.native_ddl(&schema, &table))?;
+            with_meta_retry(&state, &profile_id, None, |conn| conn.native_ddl(&schema, &table))?;
         if let Some(ddl) = native {
             return Ok(DdlResponse {
                 ddl: format!("{}{}", ddl::ddl_comment(true), ddl),
@@ -460,7 +481,7 @@ async fn ddl_get(
             .map(|c| find_table(c, &schema, &table).is_none())
             .unwrap_or(true)
         {
-            let fresh = state.with_conn(&profile_id, "meta", None, |conn| conn.catalog())?;
+            let fresh = with_meta_retry(&state, &profile_id, None, |conn| conn.catalog())?;
             cache.0.lock().insert(profile_id.clone(), fresh.clone());
             cat = Some(fresh);
         }
@@ -587,6 +608,49 @@ async fn history_clear() -> AppResult<()> {
     tauri::async_runtime::spawn_blocking(history::clear)
         .await
         .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+
+// ----------------------------------------------------------- schema objects --
+
+#[tauri::command]
+async fn objects_list(
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+    database: Option<String>,
+) -> AppResult<Vec<objects::DbObject>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_meta_retry(&state, &profile_id, database.as_deref(), |conn| objects::list(conn.as_mut()))
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn object_ddl(
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+    database: Option<String>,
+    kind: String,
+    schema: Option<String>,
+    name: String,
+    detail: Option<String>,
+) -> AppResult<String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_meta_retry(&state, &profile_id, database.as_deref(), |conn| {
+            objects::ddl(
+                conn.as_mut(),
+                &kind,
+                schema.as_deref().unwrap_or(""),
+                &name,
+                detail.as_deref().unwrap_or(""),
+            )
+        })
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
 }
 
 // ---------------------------------------------------------------- consoles --
@@ -818,6 +882,8 @@ pub fn run() {
             session_close,
             catalog_get,
             ddl_get,
+            objects_list,
+            object_ddl,
             import_preview,
             import_run,
             export_run,

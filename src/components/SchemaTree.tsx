@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { ConnectionProfile, ConsoleFile, TableInfo } from "../api";
+import { ConnectionProfile, ConsoleFile, DbObject, TableInfo } from "../api";
 import { useStore } from "../store";
 import { ConsoleIcon, DbIcon, Expander, TableIcon, ViewIcon, engineOf } from "./DbIcons";
 import { dragRegionMouseDown } from "./TabBar";
@@ -154,11 +154,124 @@ const ProfileNode = memo(function ProfileNode({
               setCtx={setCtx}
             />
           ))}
+          {catalog && <OtherObjectsNode profileId={profile.id} setCtx={setCtx} />}
         </>
       )}
     </>
   );
 });
+
+const KIND_LABELS: Record<string, string> = {
+  function: "Functions",
+  procedure: "Procedures",
+  sequence: "Sequences",
+  trigger: "Triggers",
+  role: "Roles",
+};
+const KIND_ORDER = ["function", "procedure", "sequence", "trigger", "role"];
+
+/** Rarely-needed schema objects, tucked away collapsed: functions, stored
+ * procedures, sequences, triggers, roles. Right-click exposes the DDL. */
+function OtherObjectsNode({
+  profileId,
+  setCtx,
+}: {
+  profileId: string;
+  setCtx: (c: CtxMenu | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const objects = useStore((s) => s.objectsByProfile[profileId]);
+  const loading = useStore((s) => s.objectsLoading[profileId]);
+  const loadObjects = useStore((s) => s.loadObjects);
+  const openDdl = useStore((s) => s.openDdl);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && objects === undefined) void loadObjects(profileId);
+  };
+
+  const objectCtx = (o: DbObject) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtx({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: "Show DDL",
+          action: () =>
+            openDdl({
+              profileId,
+              schema: o.schema ?? "",
+              table: o.name,
+              kind: o.kind,
+              detail: o.detail ?? "",
+            }),
+        },
+      ],
+    });
+  };
+
+  const groups = KIND_ORDER.map(
+    (k) => [k, (objects ?? []).filter((o) => o.kind === k)] as const,
+  ).filter(([, list]) => list.length > 0);
+
+  return (
+    <>
+      <div className="tree-node" style={{ paddingLeft: 22 }} onClick={toggle}>
+        <Expander expanded={open} />
+        <span className="icon">⚙</span>
+        <span className="label">Other objects</span>
+        {objects !== undefined && <span className="meta">{objects.length}</span>}
+        {loading && <span className="spinner" />}
+      </div>
+      {open && objects !== undefined && objects.length === 0 && !loading && (
+        <div className="tree-node" style={{ paddingLeft: 40, cursor: "default" }}>
+          <span className="meta">none found</span>
+        </div>
+      )}
+      {open &&
+        groups.map(([kind, list]) => (
+          <div key={kind}>
+            <div className="tree-node" style={{ paddingLeft: 40, cursor: "default" }}>
+              <span className="meta">{KIND_LABELS[kind]}</span>
+            </div>
+            {list.map((o, i) => (
+              <div
+                key={`${o.schema ?? ""}.${o.name}.${i}`}
+                className="tree-node"
+                style={{ paddingLeft: 56 }}
+                onContextMenu={objectCtx(o)}
+                onDoubleClick={() =>
+                  openDdl({
+                    profileId,
+                    schema: o.schema ?? "",
+                    table: o.name,
+                    kind: o.kind,
+                    detail: o.detail ?? "",
+                  })
+                }
+                title={`${o.schema ? `${o.schema}.` : ""}${o.name}${
+                  o.detail ? ` (${o.detail})` : ""
+                } — right-click for DDL`}
+              >
+                <span className="icon" style={{ color: "var(--text-dim)", fontSize: 10 }}>
+                  ƒ
+                </span>
+                <span className="label">{o.name}</span>
+                {o.detail && kind !== "trigger" && (
+                  <span className="meta" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {o.detail}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+    </>
+  );
+}
 
 /** Stable fallback: a zustand selector must return a cached snapshot —
  * building `?? []` inside it yields a fresh array every call, which

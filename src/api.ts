@@ -103,6 +103,15 @@ export interface SchemaInfo {
   tables: TableInfo[];
 }
 
+/** Non-table schema object for the tree's "Other objects" section. */
+export interface DbObject {
+  schema?: string | null;
+  name: string;
+  /** "function" | "procedure" | "sequence" | "trigger" | "role" */
+  kind: string;
+  detail?: string | null;
+}
+
 export interface Catalog {
   schemas: SchemaInfo[];
 }
@@ -275,6 +284,25 @@ export const api = {
 
   catalogGet: (profileId: string, refresh: boolean) =>
     invoke<Catalog>("catalog_get", { profileId, refresh }),
+  objectsList: (profileId: string, database?: string | null) =>
+    invoke<DbObject[]>("objects_list", { profileId, database: database ?? null }),
+  objectDdl: (
+    profileId: string,
+    kind: string,
+    schema: string | null,
+    name: string,
+    detail: string | null,
+    database?: string | null,
+  ) =>
+    invoke<string>("object_ddl", {
+      profileId,
+      kind,
+      schema,
+      name,
+      detail,
+      database: database ?? null,
+    }),
+
   ddlGet: (profileId: string, schema: string, table: string) =>
     invoke<{ ddl: string; native: boolean }>("ddl_get", { profileId, schema, table }),
 

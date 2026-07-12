@@ -5,6 +5,7 @@ import {
   Catalog,
   ConnectionProfile,
   ConsoleFile,
+  DbObject,
   EnvStatus,
   RunError,
   StatementOutcome,
@@ -46,7 +47,12 @@ export interface TabState {
 export interface DdlTarget {
   profileId: string;
   schema: string;
+  /** Object name; tables use this too (historic field name). */
   table: string;
+  /** "table" (default) | "function" | "procedure" | "sequence" | "trigger" | "role" */
+  kind?: string;
+  /** Disambiguator for non-table objects (routine args, trigger table). */
+  detail?: string;
 }
 
 export interface ImportTarget {
@@ -80,6 +86,9 @@ interface Store {
   sessions: Record<string, number>;
   /** Saved (closed) consoles per profile, from the local filesystem. */
   closedConsoles: Record<string, ConsoleFile[]>;
+  /** Non-table objects (functions, triggers, …) per profile, lazily loaded. */
+  objectsByProfile: Record<string, DbObject[]>;
+  objectsLoading: Record<string, boolean>;
 
   tabs: TabState[];
   activeTabId: string | null;
@@ -104,6 +113,7 @@ interface Store {
   init(): Promise<void>;
   loadProfiles(): Promise<void>;
   loadCatalog(profileId: string, refresh?: boolean): Promise<void>;
+  loadObjects(profileId: string): Promise<void>;
   toggleExpanded(profileId: string): void;
   loadDatabases(profileId: string): Promise<void>;
   refreshSessions(): Promise<void>;
@@ -259,6 +269,8 @@ export const useStore = create<Store>((set, get) => {
     catalogs: {},
     catalogLoading: {},
     catalogErrors: {},
+    objectsByProfile: {},
+    objectsLoading: {},
     expandedProfiles: {},
     env: null,
     databasesByProfile: {},
@@ -401,6 +413,20 @@ export const useStore = create<Store>((set, get) => {
         }));
       } finally {
         set((s) => ({ catalogLoading: { ...s.catalogLoading, [profileId]: false } }));
+      }
+    },
+
+    async loadObjects(profileId) {
+      if (get().objectsLoading[profileId]) return;
+      set((s) => ({ objectsLoading: { ...s.objectsLoading, [profileId]: true } }));
+      try {
+        const objs = await api.objectsList(profileId);
+        set((s) => ({ objectsByProfile: { ...s.objectsByProfile, [profileId]: objs } }));
+      } catch {
+        // Engines without introspectable objects just show an empty section.
+        set((s) => ({ objectsByProfile: { ...s.objectsByProfile, [profileId]: [] } }));
+      } finally {
+        set((s) => ({ objectsLoading: { ...s.objectsLoading, [profileId]: false } }));
       }
     },
 
@@ -708,6 +734,16 @@ export const useStore = create<Store>((set, get) => {
           void api.consoleSave(consoleFileFor(done, false)).catch(() => undefined);
           // Keep the database switcher fresh (e.g. after CREATE DATABASE).
           void get().loadDatabases(done.profileId);
+          // A console just talked to the server; if the tree is showing a
+          // stale connection error (server was down earlier), refresh the
+          // schema now that we're demonstrably reconnected. Any completed
+          // statement proves the connection — a SQL error on a later
+          // statement doesn't.
+          const talked = res.statements.length > 0 || !res.error;
+          if (talked && get().catalogErrors[done.profileId]) {
+            void get().loadCatalog(done.profileId, true);
+            void get().loadObjects(done.profileId);
+          }
         }
       } catch (e) {
         const message = errMessage(e);
