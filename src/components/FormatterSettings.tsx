@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
-import { format as sqlFormat } from "sql-formatter";
+import { useEffect, useState } from "react";
 import { DEFAULT_FORMATTER, FormatterConfig, useStore } from "../store";
+import { formatSql } from "../formatter";
 
 const SAMPLE =
   "select o.id, o.total, c.name from orders o join customers c on c.id=o.customer_id where o.total>100 order by o.total desc;";
@@ -13,18 +13,23 @@ export default function FormatterSettings() {
   const saved = useStore((s) => s.appConfig.formatter);
   const [cfg, setCfg] = useState<FormatterConfig>(saved ?? DEFAULT_FORMATTER);
 
-  const preview = useMemo(() => {
-    try {
-      return sqlFormat(SAMPLE, {
-        language: "sql",
-        keywordCase: cfg.keywordCase,
-        tabWidth: cfg.tabWidth,
-        linesBetweenQueries: cfg.linesBetweenQueries,
-        denseOperators: cfg.denseOperators,
-      });
-    } catch {
-      return SAMPLE;
-    }
+  // sql-formatter loads on demand (see formatter.ts), so the preview updates
+  // asynchronously as the options change.
+  const [preview, setPreview] = useState(SAMPLE);
+  useEffect(() => {
+    let alive = true;
+    formatSql(SAMPLE, {
+      language: "sql",
+      keywordCase: cfg.keywordCase,
+      tabWidth: cfg.tabWidth,
+      linesBetweenQueries: cfg.linesBetweenQueries,
+      denseOperators: cfg.denseOperators,
+    })
+      .then((out) => alive && setPreview(out))
+      .catch(() => alive && setPreview(SAMPLE));
+    return () => {
+      alive = false;
+    };
   }, [cfg]);
 
   const patch = (p: Partial<FormatterConfig>) => setCfg((c) => ({ ...c, ...p }));

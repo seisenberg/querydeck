@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { format as sqlFormat } from "sql-formatter";
+import { formatSql } from "./formatter";
 import { splitStatements } from "./sqlsplit";
 import {
   api,
@@ -955,14 +955,15 @@ export const useStore = create<Store>((set, get) => {
         get().showToast(errMessage(e)),
       );
     },
-    reformatActiveTab() {
+    async reformatActiveTab() {
       const s = get();
       const tab = s.tabs.find((t) => t.id === s.activeTabId);
       if (!tab || !tab.sql.trim()) return;
       const driver = s.profiles.find((p) => p.id === tab.profileId)?.driver;
       const cfg = s.appConfig.formatter ?? DEFAULT_FORMATTER;
       try {
-        const formatted = sqlFormat(tab.sql, {
+        // sql-formatter is loaded on demand (see formatter.ts); await it.
+        const formatted = await formatSql(tab.sql, {
           language: formatterLanguage(driver) as never,
           keywordCase: cfg.keywordCase,
           tabWidth: cfg.tabWidth,
