@@ -54,7 +54,7 @@ const SQL_WORDS = new Set(
     "numeric decimal float double serial bigserial uuid json jsonb blob clob bytea datetime " +
     "timestamp timestamptz timetz interval ilike coalesce nullif ifnull isnull concat substr " +
     "substring strftime regexp rlike autoincrement unsigned zerofill rowid ctid xmin oid " +
-    "pragma tablespace unnest jsonb_agg string_agg array_agg group_concat len nvl decode " +
+    "pragma tablespace unnest jsonb_agg string_agg array_agg group_concat len nvl decode trunc " +
     "sysdate getdate dateadd datediff datepart charindex nchar ntext varbinary rownum dual " +
     "limit offset asc desc distinct having exists cascade restrict grant revoke func proc " +
     "tmp temp cfg ctx idx pkey fkey seq trg usr pwd src dst dest util db dbo sess"

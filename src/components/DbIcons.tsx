@@ -17,6 +17,10 @@ export type EngineKind =
   | "oracle"
   | "h2"
   | "trino"
+  | "databricks"
+  | "teradata"
+  | "vertica"
+  | "exasol"
   | "odbc"
   | "jdbc";
 
@@ -52,6 +56,10 @@ export function engineOf(profile: ConnectionProfile): EngineKind {
       if (cls.includes("oracle")) return "oracle";
       if (cls.includes("h2")) return "h2";
       if (cls.includes("trino")) return "trino";
+      if (cls.includes("databricks")) return "databricks";
+      if (cls.includes("teradata")) return "teradata";
+      if (cls.includes("vertica")) return "vertica";
+      if (cls.includes("exasol")) return "exasol";
       return "jdbc";
     }
   }
@@ -70,6 +78,10 @@ const ENGINE_COLORS: Record<EngineKind, string> = {
   oracle: "#f80000",
   h2: "#4a90d9",
   trino: "#dd00a1",
+  databricks: "#ff3621",
+  teradata: "#f79432",
+  vertica: "#0e6a8b",
+  exasol: "#0fb5e8",
   odbc: "#9aa4b5",
   jdbc: "#f89820",
 };
@@ -87,6 +99,10 @@ const ENGINE_MARKS: Record<EngineKind, string> = {
   oracle: "Or",
   h2: "H2",
   trino: "Tr",
+  databricks: "Dx",
+  teradata: "Td",
+  vertica: "Vt",
+  exasol: "Ex",
   odbc: "OD",
   jdbc: "J",
 };

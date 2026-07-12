@@ -80,3 +80,16 @@ lint, ClickHouse play endpoint, startup/shutdown timing).
   placeholder text removed (connection name still shows when one is active).
 - All three verified in the browser preview (delete closes tab, rail clean,
   statusbar layout).
+
+## Session 2026-07-12 — warehouses + README refresh
+- Warehouse presets in the New Connection picker (Snowflake, Databricks,
+  Teradata, Vertica, Exasol) — JDBC underneath, prefilled from the registry,
+  jar auto-attached when downloaded; Databricks JDBC added to the registry
+  (27 engines now); engine icons for databricks/teradata/vertica/exasol.
+- README rewritten terse: drivers table leads with ODBC/JDBC, limitations
+  section removed, three fresh screenshots (hero with 10 connections +
+  3 consoles + rich CTE query with results; connection modal with Snowflake
+  preset; driver manager) generated via scripts/readme-shots.mjs
+  (Playwright against the devmock preview).
+- Pushed to seisenberg/querydeck main (0b6bd6e..678e35f), pushing again
+  with this batch.

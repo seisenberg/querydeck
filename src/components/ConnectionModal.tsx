@@ -31,6 +31,16 @@ const DRIVER_LABELS: Record<DriverKind, string> = {
   jdbc: "JDBC",
 };
 
+/** Analytics/warehouse engines offered as first-class picker entries; each
+ * is a JDBC connection under the hood, prefilled from the driver registry. */
+const WAREHOUSE_PRESETS: { registryId: string; label: string }[] = [
+  { registryId: "jdbc-snowflake", label: "Snowflake" },
+  { registryId: "jdbc-databricks", label: "Databricks" },
+  { registryId: "jdbc-teradata", label: "Teradata" },
+  { registryId: "jdbc-vertica", label: "Vertica" },
+  { registryId: "jdbc-exasol", label: "Exasol" },
+];
+
 function defaultParams(kind: DriverKind): ConnectionProfile["params"] {
   switch (kind) {
     case "sqlite":
@@ -133,6 +143,8 @@ export default function ConnectionModal() {
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  /** Which warehouse picker entry (if any) configured the current JDBC form. */
+  const [warehousePreset, setWarehousePreset] = useState<string | null>(null);
 
   useEffect(() => {
     api.tunnelsList().then(setTunnels).catch(() => undefined);
@@ -157,13 +169,13 @@ export default function ConnectionModal() {
           : driver === "odbc"
             ? "odbc"
             : driver === "jdbc"
-              ? "jdbc"
+              ? (WAREHOUSE_PRESETS.find((w) => w.registryId === warehousePreset)?.label.toLowerCase() ?? "jdbc")
               : `${(params as PostgresParams).database ?? ""}@${(params as PostgresParams).host ?? ""}`),
       driver,
       params,
       sshTunnel: sshTunnel || null,
     }),
-    [editing, name, driver, params, sshTunnel],
+    [editing, name, driver, params, sshTunnel, warehousePreset],
   );
 
   const deleteProfile = async () => {
@@ -188,7 +200,41 @@ export default function ConnectionModal() {
   const pickDriver = (k: DriverKind) => {
     setDriver(k);
     setParams(defaultParams(k));
+    setWarehousePreset(null);
     setTestMsg(null);
+  };
+
+  /** Warehouse picker entries are JDBC connections prefilled from the
+   * driver registry (URL template, driver class, downloaded jar). */
+  const pickWarehouse = async (registryId: string) => {
+    setDriver("jdbc");
+    setWarehousePreset(registryId);
+    setTestMsg(null);
+    setParams(defaultParams("jdbc"));
+    try {
+      const regs = jdbcPresets.length ? jdbcPresets : await api.driversRegistry();
+      if (!jdbcPresets.length) setJdbcPresets(regs);
+      const pkg = regs.find((d) => d.id === registryId);
+      if (pkg) {
+        setParams({
+          url: pkg.urlTemplate
+            .replace("{host}", "")
+            .replace("{port}", String(pkg.defaultPort || 0)),
+          driver_class: pkg.driverClass,
+          jars: pkg.path ? [pkg.path] : [],
+          user: "",
+          password: "",
+        } as JdbcParams);
+        if (!pkg.downloaded) {
+          setTestMsg({
+            ok: false,
+            text: `The ${pkg.title} driver jar is not downloaded yet — use "Get drivers…" below.`,
+          });
+        }
+      }
+    } catch {
+      // registry unavailable: plain JDBC form remains
+    }
   };
 
   const set = (patch: Partial<ConnectionProfile["params"]>) =>
@@ -260,10 +306,20 @@ export default function ConnectionModal() {
               {(Object.keys(DRIVER_LABELS) as DriverKind[]).map((k) => (
                 <button
                   key={k}
-                  className={driver === k ? "selected" : ""}
+                  className={driver === k && !warehousePreset ? "selected" : ""}
                   onClick={() => pickDriver(k)}
                 >
                   {DRIVER_LABELS[k]}
+                </button>
+              ))}
+              {WAREHOUSE_PRESETS.map((p) => (
+                <button
+                  key={p.registryId}
+                  className={warehousePreset === p.registryId ? "selected" : ""}
+                  onClick={() => void pickWarehouse(p.registryId)}
+                  title={`${p.label} via its official JDBC driver (one-click download)`}
+                >
+                  {p.label}
                 </button>
               ))}
             </div>

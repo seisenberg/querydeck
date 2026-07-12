@@ -147,6 +147,17 @@ pub const PACKAGES: &[DriverPackage] = &[
         notes: "Native (PG wire) driver is built in; JDBC adds IAM auth options.",
     },
     DriverPackage {
+        id: "jdbc-databricks",
+        title: "Databricks",
+        version: "3.4.1",
+        url: "https://repo1.maven.org/maven2/com/databricks/databricks-jdbc/3.4.1/databricks-jdbc-3.4.1.jar",
+        filename: "databricks-jdbc-3.4.1.jar",
+        driver_class: "com.databricks.client.jdbc.Driver",
+        url_template: "jdbc:databricks://{host}:443;httpPath={http-path};AuthMech=3;UID=token;PWD={personal-access-token}",
+        default_port: 443,
+        notes: "Official OSS driver; http-path from the SQL warehouse's connection details.",
+    },
+    DriverPackage {
         id: "jdbc-athena",
         title: "Amazon Athena",
         version: "2026.24.1",
