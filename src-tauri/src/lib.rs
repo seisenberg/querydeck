@@ -18,7 +18,8 @@ pub mod testkit {
     pub use crate::catalog::*;
     pub use crate::ddl::generate_table_ddl;
     pub use crate::drivers::{
-        connect, ConnectionProfile, DbConnection, Dialect, DriverParams, RowEvent, SqliteParams,
+        connect, ClickhouseParams, ConnectionProfile, DbConnection, Dialect, DriverParams,
+        RowEvent, SqliteParams,
     };
     pub use crate::error::ErrorKind;
     pub use crate::sqlsplit::split_statements;
@@ -1081,15 +1082,17 @@ fn drivers_dir() -> String {
 // --------------------------------------------------------------------- run --
 
 pub fn run() {
+    let boot = std::time::Instant::now();
     let state = Arc::new(AppState::default());
     state.load_profiles();
+    eprintln!("[startup] profiles loaded in {:?}", boot.elapsed());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .manage(Arc::new(CatalogCache::default()))
         .manage(Arc::new(ActivityRegistry::default()))
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem, SubmenuBuilder};
             let show_history = MenuItemBuilder::with_id("show-history", "Show Query History…")
                 .accelerator("CmdOrCtrl+Y")
@@ -1157,6 +1160,7 @@ pub fn run() {
             }
 
             app.set_menu(menu)?;
+            eprintln!("[startup] setup complete in {:?}", boot.elapsed());
             app.on_menu_event(|app, event| {
                 use tauri::Emitter;
                 match event.id().as_ref() {
@@ -1232,7 +1236,9 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
+                let t = std::time::Instant::now();
                 tunnels::stop_all();
+                eprintln!("[shutdown] tunnels stopped in {:?}", t.elapsed());
             }
         });
 }
