@@ -4,6 +4,7 @@ import {
   ClickhouseParams,
   ConnectionProfile,
   DriverKind,
+  DriverPackage,
   JdbcParams,
   MssqlParams,
   MysqlParams,
@@ -125,6 +126,7 @@ export default function ConnectionModal() {
   const [sshTunnel, setSshTunnel] = useState<string>(editing?.sshTunnel ?? "");
   const [tunnels, setTunnels] = useState<TunnelConfig[]>([]);
   const [odbcInv, setOdbcInv] = useState<OdbcInventory | null>(null);
+  const [jdbcPresets, setJdbcPresets] = useState<DriverPackage[]>([]);
   const [params, setParams] = useState<ConnectionProfile["params"]>(
     editing?.params ?? defaultParams(editing?.driver ?? "sqlite"),
   );
@@ -140,7 +142,10 @@ export default function ConnectionModal() {
     if (driver === "odbc" && !odbcInv) {
       api.odbcInventory().then(setOdbcInv).catch(() => undefined);
     }
-  }, [driver, odbcInv]);
+    if (driver === "jdbc" && jdbcPresets.length === 0) {
+      api.driversRegistry().then(setJdbcPresets).catch(() => undefined);
+    }
+  }, [driver, odbcInv, jdbcPresets.length]);
 
   const profile = useMemo<ConnectionProfile>(
     () => ({
@@ -441,6 +446,34 @@ export default function ConnectionModal() {
 
             {driver === "jdbc" && (
               <>
+                {jdbcPresets.length > 0 && (
+                  <>
+                    <label>Preset</label>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const pkg = jdbcPresets.find((d) => d.id === e.target.value);
+                        if (!pkg) return;
+                        set({
+                          url: pkg.urlTemplate
+                            .replace("{host}", "localhost")
+                            .replace("{port}", String(pkg.defaultPort || 0)),
+                          driver_class: pkg.driverClass,
+                          jars: pkg.path ? [pkg.path] : (params as JdbcParams).jars,
+                        } as never);
+                      }}
+                      title="Prefill URL template and driver class for a known engine"
+                    >
+                      <option value="">— pick an engine… —</option>
+                      {jdbcPresets.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.title}
+                          {d.downloaded ? " ✓" : " (driver not downloaded)"}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
                 <label>JDBC URL</label>
                 <input
                   value={(p as JdbcParams).url}
