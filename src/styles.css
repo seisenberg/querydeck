@@ -1109,6 +1109,15 @@ input[type="radio"] {
   background: var(--bg-elevated);
 }
 
+/* lint decorations: red squiggles come stock; spellcheck gets a quieter
+ * dotted underline instead of a squiggle. */
+.cm-lintRange-info.qd-spell {
+  background-image: none;
+  text-decoration: underline dotted var(--warn);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
 /* editor find/replace panel */
 .qd-search {
   display: flex;

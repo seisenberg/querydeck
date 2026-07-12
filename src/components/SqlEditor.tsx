@@ -41,6 +41,7 @@ import {
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { statementAt } from "../sqlsplit";
+import { sqlLinter } from "../lint";
 import type { DriverKind } from "../api";
 
 /** Find/replace panel: plain text or regex (.*), case toggle (iI), close
@@ -209,6 +210,43 @@ const themeFor = (dark: boolean) => [
   syntaxHighlighting(dark ? darkHighlight : defaultHighlightStyle, { fallback: true }),
 ];
 
+/** All schema/table/column names (and their word parts), lowercased — the
+ * spellchecker must never flag them. */
+const schemaWordsCache = new WeakMap<object, Set<string>>();
+function schemaWordsOf(schema: SQLNamespace | undefined): Set<string> {
+  if (!schema || typeof schema !== "object") return EMPTY_WORDS;
+  const cached = schemaWordsCache.get(schema);
+  if (cached) return cached;
+  const out = new Set<string>();
+  const add = (name: string) => {
+    out.add(name.toLowerCase());
+    for (const part of name.split(/[_\d]+/)) {
+      if (part) out.add(part.toLowerCase());
+      for (const hump of part.matchAll(/[A-Z]?[a-z]+/g)) out.add(hump[0].toLowerCase());
+    }
+  };
+  const walk = (ns: SQLNamespace) => {
+    if (Array.isArray(ns)) {
+      for (const item of ns) {
+        if (typeof item === "string") add(item);
+        else if (item && typeof item === "object" && "label" in item) add(String(item.label));
+      }
+      return;
+    }
+    if (typeof ns === "object" && ns) {
+      for (const [k, v] of Object.entries(ns)) {
+        if (k === "self" || k === "children") continue;
+        add(k);
+        walk(v as SQLNamespace);
+      }
+    }
+  };
+  walk(schema);
+  schemaWordsCache.set(schema, out);
+  return out;
+}
+const EMPTY_WORDS = new Set<string>();
+
 function sqlDialect(driver: DriverKind | null) {
   switch (driver) {
     case "postgres":
@@ -240,6 +278,10 @@ export default function SqlEditor({
   // Keep latest callbacks without recreating the editor.
   const cbRef = useRef({ onChange, onRunStatement, onRunAll, historyCompletions });
   cbRef.current = { onChange, onRunStatement, onRunAll, historyCompletions };
+
+  // Lint context read through a ref so the linter never needs rebuilding.
+  const lintCtxRef = useRef({ driver: driver as string | null, schemaWords: new Set<string>() });
+  lintCtxRef.current = { driver, schemaWords: schemaWordsOf(schema) };
 
   // Completions mined from the connection's query history; a stable source
   // reading through cbRef so the editor never needs reconfiguring for it.
@@ -286,6 +328,7 @@ export default function SqlEditor({
         highlightActiveLine(),
         highlightSelectionMatches(),
         search({ createPanel: createSearchPanel, top: true }),
+        sqlLinter(() => lintCtxRef.current),
         themeCompartment.current.of(
           themeFor(window.matchMedia("(prefers-color-scheme: dark)").matches),
         ),
