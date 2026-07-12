@@ -18,3 +18,18 @@
    with entropy/schema/keyword skips; heavy deps lazy-loaded (entry 944K).
 
 Next: chunk 6 (native engines: mssql/tiberius, redshift, mariadb, clickhouse).
+
+### Landed (continued)
+6. Native engines: SQL Server (tiberius), Redshift (PG wire, tolerant catalog),
+   MariaDB, ClickHouse (HTTP/JSONCompact). Dialects Mssql/Clickhouse added.
+7. JDBC catalog: 26 verified latest vendor drivers; searchable manager;
+   connection-modal preset picker.
+8. Other objects tree: schema → kind grouping, collapsed by default;
+   objects.rs fully tolerant per query.
+9. Keychain: passwords → OS keychain w/ sentinel + migration + fallback.
+10/11. Disk catalog cache + background refresh (catalog:updated), activity
+   registry + statusbar icon (4 states) + Background Activity modal with
+   cancel + Disconnect & clear cache kill switch.
+
+Next: live testing in the real app (tab drag, modal, formatter, search,
+lint, ClickHouse play endpoint, startup/shutdown timing).
