@@ -37,15 +37,21 @@ Runs on macOS, Windows, and Linux.
 | --- | --- | --- |
 | SQLite | bundled (rusqlite) | none |
 | PostgreSQL | native Rust (tokio-postgres + rustls TLS) | none |
-| MySQL / MariaDB | native Rust (mysql crate, rustls TLS) | none |
+| Amazon Redshift | native (PG wire protocol, Redshift-tolerant introspection) | none |
+| MySQL | native Rust (mysql crate, rustls TLS) | none |
+| MariaDB | native (MySQL wire protocol) | none |
+| SQL Server | native Rust (tiberius, rustls TLS) | none |
+| ClickHouse | native (HTTP interface, typed JSON results) | none |
 | **ODBC** | thin binding loaded at runtime — connect to anything with an ODBC driver | Windows: built in · macOS: `brew install unixodbc` · Debian/Ubuntu: `apt install unixodbc` |
 | **JDBC** | JNI bridge, JVM discovered at runtime — connect to anything with a JDBC driver | a Java 11+ runtime (e.g. [Temurin](https://adoptium.net)); set `JAVA_HOME` |
 
-The **driver manager** (⚙ in the sidebar, or the status bar) shows ODBC/Java availability
-and offers one-click downloads from Maven Central for common JDBC drivers: PostgreSQL,
-MySQL, MariaDB, SQLite, DuckDB, ClickHouse, SQL Server, Oracle, H2, Trino. Downloaded
-jars land in the app data directory and can be attached to a JDBC connection with one
-click ("New connection"). Custom jars can be added to any JDBC connection.
+The **driver manager** (File → Database Drivers…, or the status bar) shows ODBC/Java
+availability and offers one-click downloads of the latest vendor JDBC drivers from
+Maven Central — 26 engines including Snowflake, Oracle, Db2, Redshift, Athena,
+Teradata, Vertica, Exasol, SAP HANA, Informix, Hive/Spark, Trino, Presto, Firebird,
+HSQLDB, Derby, MongoDB (Atlas SQL) and Sybase. The list is searchable; downloaded jars
+can start a prefilled JDBC connection with one click, and the JDBC form has a preset
+picker for URL template + driver class. Custom jars can be added to any connection.
 
 Because the ODBC driver manager and the JVM are loaded dynamically, the app starts and
 works fine on machines that have neither — those connection types just explain what to
@@ -84,13 +90,33 @@ Row values cross the IPC boundary as plain JSON (null/bool/number/string); resul
 live in the Rust side (capped at ~2M rows total, oldest evicted) and the grid pages
 through them with `page_fetch`.
 
+## Editor & workflow niceties
+
+- **Reformat Query** (Edit menu, `⌘⌥L`) via sql-formatter, dialect-aware; Formatter
+  Settings (keyword case, indent, blank lines, dense operators) persist in the app
+  config and preview live.
+- **Find/replace** with case-insensitive (`iI`) and regex (`.*`) toggles.
+- **Autocomplete** from the schema *and* your query history (recent statements +
+  identifier vocabulary); arrows navigate, Enter/Tab/click accept.
+- **Validation**: DML statements parse in the connection's dialect (red squiggles,
+  e.g. the second `SELECT` in `SELECT SELECT`); doubled-keyword heuristic everywhere.
+- **Spellcheck** over comments/strings/identifiers (dotted underline) that skips
+  high-entropy tokens, acronyms, SQL vocabulary and schema names.
+- **Schema cache on disk** — the tree renders instantly on launch from the last known
+  schema, then refreshes in the background once per run.
+- **Activity icon** in the status bar (idle / queries / background / both); click it
+  for the Background Activity modal with per-query cancel and a per-connection
+  "Disconnect & clear cache" kill switch.
+- **OS keychain** — connection passwords live in the macOS Keychain / Windows
+  Credential Manager / Secret Service; `connections.json` only holds a sentinel
+  (existing plaintext profiles migrate automatically).
+
 ## Notes & limitations (current state)
 
-- Connection profiles (including passwords) are stored as plain JSON in the app config
-  directory. OS keychain integration is a TODO.
 - ODBC/JDBC values are read as text — fine for browsing/exporting, no binary fidelity.
 - Cooperative cancel stops result streaming; PostgreSQL additionally cancels
   server-side. A long-running statement on other engines finishes server-side before the
   error surfaces.
-- No SQL reformatting, VCS integration, or query history yet — deliberately out of scope
-  for now.
+- ODBC connection strings may embed `Pwd=`; those stay in the connection string (the
+  keychain covers the discrete password fields of the other drivers).
+- No VCS integration yet.

@@ -59,3 +59,12 @@ lint, ClickHouse play endpoint, startup/shutdown timing).
 - Env limitation: screencapture can't capture window contents (no Screen
   Recording permission) and Apple Events denied — native-window driving is
   unavailable; browser preview + mock covers UI, Rust tests cover backend.
+
+### Startup/shutdown (release build, measured)
+- Spawn → profiles loaded: 0.75s wall (profile load itself 0.66ms).
+- Spawn → backend setup complete (menus/window path): 1.12s wall (371ms in run()).
+- SIGTERM → process exit: 18ms.
+- Disk schema cache makes the tree instant on expand; background refresh
+  heals staleness once per run. Entry JS chunk kept at 944K (parser +
+  dictionary lazy-load). Conclusion: startup ~1.1–1.5s cold, shutdown
+  instant; no further hot spots found.
