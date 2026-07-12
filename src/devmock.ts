@@ -56,7 +56,8 @@ if (!w.__TAURI_INTERNALS__) {
     { id: "demo-mssql", name: "crm", driver: "mssql", params: { ...server("sql01.corp", 1433, "sa", "CRM"), encrypt: true } },
     { id: "demo-mysql", name: "shop", driver: "mysql", params: { ...server("mysql.shop.internal", 3306, "root", "shop"), use_ssl: true } },
     { id: "demo-mariadb", name: "wiki", driver: "mariadb", params: server("maria.internal", 3306, "wiki", "wiki") },
-    { id: "demo-duckdb", name: "local.duckdb", driver: "jdbc", params: jdbc("org.duckdb.DuckDBDriver", "jdbc:duckdb:/Users/demo/data/local.duckdb") },
+    { id: "demo-duckdb", name: "local.duckdb", driver: "duckdb", params: { path: "/Users/demo/data/local.duckdb" } },
+    { id: "demo-trino", name: "federation", driver: "trino", params: { host: "trino.internal", port: 8080, user: "trino", password: "", catalog: "iceberg", schema: "", use_https: false, accept_invalid_certs: false } },
     { id: "demo-sqlite", name: "demo.db", driver: "sqlite", params: { path: "/tmp/demo.db" } },
   ];
 

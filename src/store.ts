@@ -100,11 +100,14 @@ function formatterLanguage(driver: string | undefined): string {
       return "mysql";
     case "sqlite":
       return "sqlite";
+    case "duckdb":
+      return "duckdb";
     case "mssql":
       return "transactsql";
     case "clickhouse":
-      // sql-formatter has no clickhouse dialect; standard SQL is closest.
-      return "sql";
+      return "clickhouse";
+    case "trino":
+      return "trino";
     default:
       return "sql";
   }

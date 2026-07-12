@@ -93,3 +93,19 @@ lint, ClickHouse play endpoint, startup/shutdown timing).
   (Playwright against the devmock preview).
 - Pushed to seisenberg/querydeck main (0b6bd6e..678e35f), pushing again
   with this batch.
+
+## Session 2026-07-12 — picker cleanup + native DuckDB/Trino
+- Connection picker: warehouse JDBC entries removed (they live behind the
+  JDBC tab's preset dropdown + driver manager); order now JDBC, ODBC, then
+  built-ins alphabetically (ClickHouse, DuckDB, MariaDB, MySQL, PostgreSQL,
+  Redshift, SQL Server, SQLite, Trino).
+- New native Rust drivers so those engines don't need JDBC at all:
+  * DuckDB via official embedded duckdb-rs (bundled) — typed values incl.
+    temporal/decimal/hugeint, FROM-first syntax, duckdb_tables/columns/
+    constraints catalog, native DDL, in-memory when path empty. E2E test in
+    tests/duckdb_engine.rs.
+  * Trino via its HTTP REST protocol (POST /v1/statement + nextUri pages) —
+    typed columns, updateCount, server-side kill on cancel/row-limit,
+    catalogs as the per-tab database switcher, information_schema catalog.
+- Formatter dialects upgraded (duckdb/trino/clickhouse); lint parses Trino;
+  registry notes DuckDB/Trino native; README + screenshots regenerated.

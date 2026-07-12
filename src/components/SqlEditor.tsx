@@ -260,6 +260,7 @@ function sqlDialect(driver: DriverKind | null) {
   switch (driver) {
     case "postgres":
     case "redshift":
+    case "duckdb":
       return PostgreSQL;
     case "mysql":
     case "clickhouse":

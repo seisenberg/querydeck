@@ -4,17 +4,33 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type DriverKind =
   | "sqlite"
+  | "duckdb"
   | "postgres"
   | "redshift"
   | "mysql"
   | "mariadb"
   | "mssql"
   | "clickhouse"
+  | "trino"
   | "odbc"
   | "jdbc";
 
 export interface SqliteParams {
   path: string;
+}
+export interface DuckdbParams {
+  /** Database file; empty = in-memory. */
+  path: string;
+}
+export interface TrinoParams {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  catalog: string;
+  schema: string;
+  use_https: boolean;
+  accept_invalid_certs: boolean;
 }
 export interface PostgresParams {
   host: string;
@@ -65,10 +81,12 @@ export interface JdbcParams {
 
 export type DriverParams =
   | SqliteParams
+  | DuckdbParams
   | PostgresParams
   | MysqlParams
   | MssqlParams
   | ClickhouseParams
+  | TrinoParams
   | OdbcParams
   | JdbcParams;
 

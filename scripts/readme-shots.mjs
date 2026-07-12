@@ -29,8 +29,8 @@ console.log("wrote docs/screenshot-main.png");
 // --- connection modal (element shot) ---
 await page.click(".sidebar-header .actions button[title='New connection']");
 await page.waitForSelector(".modal");
-// Pick the Snowflake warehouse preset so the picker shows it selected.
-await page.click(".driver-picker button:has-text('Snowflake')");
+// Show a native analytics engine's form (JDBC/ODBC lead the picker).
+await page.click(".driver-picker button:has-text('Trino')");
 await page.waitForTimeout(400);
 const modal = page.locator(".modal");
 await modal.screenshot({ path: "docs/screenshot-connection.png" });

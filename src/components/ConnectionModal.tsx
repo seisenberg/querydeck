@@ -5,6 +5,7 @@ import {
   ConnectionProfile,
   DriverKind,
   DriverPackage,
+  DuckdbParams,
   JdbcParams,
   MssqlParams,
   MysqlParams,
@@ -12,6 +13,7 @@ import {
   OdbcParams,
   PostgresParams,
   SqliteParams,
+  TrinoParams,
   TunnelConfig,
   api,
   errMessage,
@@ -21,30 +23,52 @@ import { useStore } from "../store";
 
 const DRIVER_LABELS: Record<DriverKind, string> = {
   sqlite: "SQLite",
+  duckdb: "DuckDB",
   postgres: "PostgreSQL",
   redshift: "Redshift",
   mysql: "MySQL",
   mariadb: "MariaDB",
   mssql: "SQL Server",
   clickhouse: "ClickHouse",
+  trino: "Trino",
   odbc: "ODBC",
   jdbc: "JDBC",
 };
 
-/** Analytics/warehouse engines offered as first-class picker entries; each
- * is a JDBC connection under the hood, prefilled from the driver registry. */
-const WAREHOUSE_PRESETS: { registryId: string; label: string }[] = [
-  { registryId: "jdbc-snowflake", label: "Snowflake" },
-  { registryId: "jdbc-databricks", label: "Databricks" },
-  { registryId: "jdbc-teradata", label: "Teradata" },
-  { registryId: "jdbc-vertica", label: "Vertica" },
-  { registryId: "jdbc-exasol", label: "Exasol" },
+/** Picker order: the bridge drivers first (JDBC covers every engine in the
+ * driver manager, ODBC anything with a system driver), then the built-in
+ * native engines alphabetically. */
+const PICKER_ORDER: DriverKind[] = [
+  "jdbc",
+  "odbc",
+  "clickhouse",
+  "duckdb",
+  "mariadb",
+  "mysql",
+  "postgres",
+  "redshift",
+  "mssql", // "SQL Server"
+  "sqlite",
+  "trino",
 ];
 
 function defaultParams(kind: DriverKind): ConnectionProfile["params"] {
   switch (kind) {
     case "sqlite":
       return { path: "" } as SqliteParams;
+    case "duckdb":
+      return { path: "" } as DuckdbParams;
+    case "trino":
+      return {
+        host: "localhost",
+        port: 8080,
+        user: "trino",
+        password: "",
+        catalog: "",
+        schema: "",
+        use_https: false,
+        accept_invalid_certs: false,
+      } as TrinoParams;
     case "postgres":
       return {
         host: "localhost",
@@ -143,8 +167,6 @@ export default function ConnectionModal() {
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  /** Which warehouse picker entry (if any) configured the current JDBC form. */
-  const [warehousePreset, setWarehousePreset] = useState<string | null>(null);
 
   useEffect(() => {
     api.tunnelsList().then(setTunnels).catch(() => undefined);
@@ -164,18 +186,20 @@ export default function ConnectionModal() {
       id: editing?.id || uid(),
       name:
         name.trim() ||
-        (driver === "sqlite"
-          ? (params as SqliteParams).path.split("/").pop() || "sqlite"
+        (driver === "sqlite" || driver === "duckdb"
+          ? (params as SqliteParams).path.split("/").pop() || driver
           : driver === "odbc"
             ? "odbc"
             : driver === "jdbc"
-              ? (WAREHOUSE_PRESETS.find((w) => w.registryId === warehousePreset)?.label.toLowerCase() ?? "jdbc")
-              : `${(params as PostgresParams).database ?? ""}@${(params as PostgresParams).host ?? ""}`),
+              ? "jdbc"
+              : driver === "trino"
+                ? `${(params as TrinoParams).catalog || "trino"}@${(params as TrinoParams).host}`
+                : `${(params as PostgresParams).database ?? ""}@${(params as PostgresParams).host ?? ""}`),
       driver,
       params,
       sshTunnel: sshTunnel || null,
     }),
-    [editing, name, driver, params, sshTunnel, warehousePreset],
+    [editing, name, driver, params, sshTunnel],
   );
 
   const deleteProfile = async () => {
@@ -200,41 +224,7 @@ export default function ConnectionModal() {
   const pickDriver = (k: DriverKind) => {
     setDriver(k);
     setParams(defaultParams(k));
-    setWarehousePreset(null);
     setTestMsg(null);
-  };
-
-  /** Warehouse picker entries are JDBC connections prefilled from the
-   * driver registry (URL template, driver class, downloaded jar). */
-  const pickWarehouse = async (registryId: string) => {
-    setDriver("jdbc");
-    setWarehousePreset(registryId);
-    setTestMsg(null);
-    setParams(defaultParams("jdbc"));
-    try {
-      const regs = jdbcPresets.length ? jdbcPresets : await api.driversRegistry();
-      if (!jdbcPresets.length) setJdbcPresets(regs);
-      const pkg = regs.find((d) => d.id === registryId);
-      if (pkg) {
-        setParams({
-          url: pkg.urlTemplate
-            .replace("{host}", "")
-            .replace("{port}", String(pkg.defaultPort || 0)),
-          driver_class: pkg.driverClass,
-          jars: pkg.path ? [pkg.path] : [],
-          user: "",
-          password: "",
-        } as JdbcParams);
-        if (!pkg.downloaded) {
-          setTestMsg({
-            ok: false,
-            text: `The ${pkg.title} driver jar is not downloaded yet — use "Get drivers…" below.`,
-          });
-        }
-      }
-    } catch {
-      // registry unavailable: plain JDBC form remains
-    }
   };
 
   const set = (patch: Partial<ConnectionProfile["params"]>) =>
@@ -303,23 +293,20 @@ export default function ConnectionModal() {
         <div className="modal-body">
           {!editing && (
             <div className="driver-picker">
-              {(Object.keys(DRIVER_LABELS) as DriverKind[]).map((k) => (
+              {PICKER_ORDER.map((k) => (
                 <button
                   key={k}
-                  className={driver === k && !warehousePreset ? "selected" : ""}
+                  className={driver === k ? "selected" : ""}
                   onClick={() => pickDriver(k)}
+                  title={
+                    k === "jdbc"
+                      ? "Any engine with a JDBC driver — Snowflake, Databricks, Oracle, … (one-click downloads)"
+                      : k === "odbc"
+                        ? "Any engine with a system ODBC driver"
+                        : `${DRIVER_LABELS[k]} (built-in native driver)`
+                  }
                 >
                   {DRIVER_LABELS[k]}
-                </button>
-              ))}
-              {WAREHOUSE_PRESETS.map((p) => (
-                <button
-                  key={p.registryId}
-                  className={warehousePreset === p.registryId ? "selected" : ""}
-                  onClick={() => void pickWarehouse(p.registryId)}
-                  title={`${p.label} via its official JDBC driver (one-click download)`}
-                >
-                  {p.label}
                 </button>
               ))}
             </div>
@@ -333,7 +320,7 @@ export default function ConnectionModal() {
               placeholder="display name (optional)"
             />
 
-            {driver === "sqlite" && (
+            {(driver === "sqlite" || driver === "duckdb") && (
               <>
                 <label>Database file</label>
                 <div className="form-row-inline">
@@ -341,9 +328,82 @@ export default function ConnectionModal() {
                     style={{ flex: 1 }}
                     value={(params as SqliteParams).path}
                     onChange={(e) => set({ path: e.target.value } as never)}
-                    placeholder="/path/to/database.db (created if missing)"
+                    placeholder={
+                      driver === "duckdb"
+                        ? "/path/to/database.duckdb (empty = in-memory)"
+                        : "/path/to/database.db (created if missing)"
+                    }
                   />
                   <button onClick={() => void pickFile("path")}>Browse…</button>
+                </div>
+              </>
+            )}
+
+            {driver === "trino" && (
+              <>
+                <label>Host</label>
+                <div className="form-row-inline">
+                  <input
+                    style={{ flex: 1 }}
+                    value={(p as TrinoParams).host}
+                    onChange={(e) => set({ host: e.target.value } as never)}
+                  />
+                  <label>Port</label>
+                  <input
+                    style={{ width: 90 }}
+                    type="number"
+                    value={(p as TrinoParams).port}
+                    onChange={(e) => set({ port: Number(e.target.value) } as never)}
+                  />
+                </div>
+                <label>Catalog</label>
+                <div className="form-row-inline">
+                  <input
+                    style={{ flex: 1 }}
+                    value={(p as TrinoParams).catalog}
+                    onChange={(e) => set({ catalog: e.target.value } as never)}
+                    placeholder="e.g. hive, iceberg (switchable per console)"
+                  />
+                  <label>Schema</label>
+                  <input
+                    style={{ width: 140 }}
+                    value={(p as TrinoParams).schema}
+                    onChange={(e) => set({ schema: e.target.value } as never)}
+                    placeholder="(optional)"
+                  />
+                </div>
+                <label>User</label>
+                <input
+                  value={(p as TrinoParams).user}
+                  onChange={(e) => set({ user: e.target.value } as never)}
+                />
+                <label>Password</label>
+                <input
+                  type="password"
+                  value={(p as TrinoParams).password}
+                  onChange={(e) => set({ password: e.target.value } as never)}
+                  placeholder="(empty for unauthenticated clusters)"
+                />
+                <label>SSL</label>
+                <div className="form-row-inline">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={(p as TrinoParams).use_https}
+                      onChange={(e) => set({ use_https: e.target.checked } as never)}
+                    />{" "}
+                    HTTPS
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={(p as TrinoParams).accept_invalid_certs}
+                      onChange={(e) =>
+                        set({ accept_invalid_certs: e.target.checked } as never)
+                      }
+                    />{" "}
+                    trust self-signed certs
+                  </label>
                 </div>
               </>
             )}

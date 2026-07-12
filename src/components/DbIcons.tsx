@@ -28,6 +28,8 @@ export function engineOf(profile: ConnectionProfile): EngineKind {
   switch (profile.driver) {
     case "sqlite":
       return "sqlite";
+    case "duckdb":
+      return "duckdb";
     case "postgres":
       return "postgres";
     case "redshift":
@@ -40,6 +42,8 @@ export function engineOf(profile: ConnectionProfile): EngineKind {
       return "mssql";
     case "clickhouse":
       return "clickhouse";
+    case "trino":
+      return "trino";
     case "odbc":
       return "odbc";
     case "jdbc": {

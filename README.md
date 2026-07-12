@@ -30,18 +30,17 @@ macOS, Windows, Linux.
 
 | | How it works | Setup |
 | --- | --- | --- |
-| **ODBC** | thin binding loaded at runtime — anything with an ODBC driver | Windows: built in · macOS: `brew install unixodbc` · Debian: `apt install unixodbc` |
 | **JDBC** | JNI bridge, JVM discovered at runtime — anything with a JDBC driver | Java 11+ (e.g. [Temurin](https://adoptium.net)) |
-| Native | SQLite · PostgreSQL · Amazon Redshift · MySQL · MariaDB · SQL Server · ClickHouse — pure-Rust drivers, zero setup | none |
+| **ODBC** | thin binding loaded at runtime — anything with an ODBC driver | Windows: built in · macOS: `brew install unixodbc` · Debian: `apt install unixodbc` |
+| Native | SQLite · DuckDB · PostgreSQL · Amazon Redshift · MySQL · MariaDB · SQL Server · ClickHouse · Trino — pure-Rust drivers, zero setup | none |
 
-The driver manager downloads the latest official JDBC driver for **26 engines** from
+The driver manager downloads the latest official JDBC driver for **27 engines** from
 Maven Central with one click — Snowflake, Databricks, Oracle, Db2, Teradata, Vertica,
-Exasol, SAP HANA, Athena, Hive/Spark, Trino, Presto, Informix, Firebird, and more.
-Snowflake, Databricks, Teradata, Vertica and Exasol also appear directly in the
-New Connection picker, prefilled and ready.
+Exasol, SAP HANA, Athena, Hive/Spark, Presto, Informix, Firebird, and more — and the
+JDBC connection form prefills any of them from a preset dropdown.
 
 <p>
-  <img src="docs/screenshot-connection.png" width="49%" alt="New connection dialog with warehouse presets" />
+  <img src="docs/screenshot-connection.png" width="49%" alt="New connection dialog" />
   <img src="docs/screenshot-drivers.png" width="49%" alt="One-click JDBC driver downloads" />
 </p>
 
@@ -69,7 +68,7 @@ src/                    React UI (tabs, editor, grid, tree, wizards)
   store.ts              zustand app state · api.ts — typed invoke wrappers
   components/           SqlEditor (CodeMirror 6), ResultsGrid (virtualized), …
 src-tauri/src/
-  drivers/              DbConnection trait + sqlite/postgres/mysql/mssql/clickhouse/odbc/jdbc
+  drivers/              DbConnection trait + sqlite/duckdb/postgres/mysql/mssql/clickhouse/trino/odbc/jdbc
   state.rs              sessions (one per profile+tab), result store, cancel flags
   catalog.rs, ddl.rs    introspection model + DDL generation
   objects.rs            functions/procedures/sequences/triggers per dialect

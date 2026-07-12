@@ -34,6 +34,7 @@ const PARSER_DB: Record<string, string> = {
   sqlite: "Sqlite",
   mssql: "TransactSQL",
   snowflake: "Snowflake",
+  trino: "Trino",
 };
 
 const DML = /^\s*(select|insert|update|delete|with|values)\b/i;

@@ -89,7 +89,7 @@ pub const PACKAGES: &[DriverPackage] = &[
         driver_class: "org.duckdb.DuckDBDriver",
         url_template: "jdbc:duckdb:{file}",
         default_port: 0,
-        notes: "Use an empty file path for an in-memory database.",
+        notes: "Native (embedded) driver is built in; JDBC is optional for DuckDB.",
     },
     DriverPackage {
         id: "jdbc-clickhouse",
@@ -232,7 +232,7 @@ pub const PACKAGES: &[DriverPackage] = &[
         driver_class: "io.trino.jdbc.TrinoDriver",
         url_template: "jdbc:trino://{host}:{port}/{catalog}",
         default_port: 8080,
-        notes: "",
+        notes: "Native (HTTP) driver is built in; JDBC is optional for Trino.",
     },
     DriverPackage {
         id: "jdbc-presto",

@@ -24,6 +24,7 @@ libloading = "0.9.0"
 dirs = "6.0.0"
 regex = "1.13.0"
 rusqlite = { version = "0.40.1", features = ["bundled", "column_decltype"] }
+duckdb = { version = "1.4.4", features = ["bundled"] }
 postgres = { version = "0.19.14", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 uuid = { version = "1.23.4", features = ["v4"] }
@@ -41,8 +42,17 @@ rust_xlsxwriter = "0.96.0"
 
 [lib]
 name = "querydeck_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# rlib only: staticlib/cdylib are for mobile targets and force enormous
+# archives now that DuckDB is bundled (a debug staticlib tops 1.5 GB).
+crate-type = ["rlib"]
 
 [profile.release]
 lto = true
 codegen-units = 1
+
+# The bundled DuckDB engine is enormous with C++ debug info (>1.5 GB of
+# objects); build it optimized and stripped even in dev — we never debug
+# into DuckDB internals, and dev binaries shrink by gigabytes.
+[profile.dev.package.libduckdb-sys]
+opt-level = 2
+debug = false

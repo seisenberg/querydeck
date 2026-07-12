@@ -1,8 +1,10 @@
 pub mod sqlite;
+pub mod duckdb;
 pub mod postgres;
 pub mod mysql;
 pub mod mssql;
 pub mod clickhouse;
+pub mod trino;
 pub mod odbc;
 pub mod jdbc;
 
@@ -37,8 +39,9 @@ impl ConnectionProfile {
             DriverParams::Mysql(p) | DriverParams::Mariadb(p) => Some(&mut p.password),
             DriverParams::Mssql(p) => Some(&mut p.password),
             DriverParams::Clickhouse(p) => Some(&mut p.password),
+            DriverParams::Trino(p) => Some(&mut p.password),
             DriverParams::Jdbc(p) => Some(&mut p.password),
-            DriverParams::Sqlite(_) | DriverParams::Odbc(_) => None,
+            DriverParams::Sqlite(_) | DriverParams::Duckdb(_) | DriverParams::Odbc(_) => None,
         }
     }
 
@@ -58,6 +61,7 @@ impl ConnectionProfile {
                     }
                     DriverParams::Mssql(ms) => ms.database = db.to_string(),
                     DriverParams::Clickhouse(ch) => ch.database = db.to_string(),
+                    DriverParams::Trino(t) => t.catalog = db.to_string(),
                     _ => {}
                 }
             }
@@ -70,6 +74,8 @@ impl ConnectionProfile {
 #[serde(tag = "driver", content = "params", rename_all = "snake_case")]
 pub enum DriverParams {
     Sqlite(SqliteParams),
+    /// DuckDB embedded natively (official duckdb-rs, bundled engine).
+    Duckdb(DuckdbParams),
     Postgres(PostgresParams),
     /// Amazon Redshift speaks the Postgres wire protocol; it shares
     /// PostgresParams but gets tolerant catalog queries (PG 8 era views).
@@ -79,8 +85,35 @@ pub enum DriverParams {
     Mariadb(MysqlParams),
     Mssql(MssqlParams),
     Clickhouse(ClickhouseParams),
+    /// Trino over its HTTP REST protocol (also fits most Presto forks).
+    Trino(TrinoParams),
     Odbc(OdbcParams),
     Jdbc(JdbcParams),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuckdbParams {
+    /// Database file; empty = in-memory.
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrinoParams {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+    /// Catalog to introspect/query (the per-tab "database" switcher swaps it).
+    #[serde(default)]
+    pub catalog: String,
+    #[serde(default)]
+    pub schema: String,
+    #[serde(default)]
+    pub use_https: bool,
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +351,7 @@ pub fn connect(profile: &ConnectionProfile) -> AppResult<Box<dyn DbConnection>> 
     let profile = &resolved;
     match &profile.params {
         DriverParams::Sqlite(p) => Ok(Box::new(sqlite::SqliteConn::open(p)?)),
+        DriverParams::Duckdb(p) => Ok(Box::new(duckdb::DuckdbConn::open(p)?)),
         DriverParams::Postgres(p) => Ok(Box::new(postgres::PostgresConn::open(p)?)),
         DriverParams::Redshift(p) => {
             Ok(Box::new(postgres::PostgresConn::open_redshift(p)?))
@@ -327,6 +361,7 @@ pub fn connect(profile: &ConnectionProfile) -> AppResult<Box<dyn DbConnection>> 
         }
         DriverParams::Mssql(p) => Ok(Box::new(mssql::MssqlConn::open(p)?)),
         DriverParams::Clickhouse(p) => Ok(Box::new(clickhouse::ClickhouseConn::open(p)?)),
+        DriverParams::Trino(p) => Ok(Box::new(trino::TrinoConn::open(p)?)),
         DriverParams::Odbc(p) => Ok(Box::new(odbc::OdbcConn::open(p)?)),
         DriverParams::Jdbc(p) => Ok(Box::new(jdbc::JdbcConn::open(p)?)),
     }

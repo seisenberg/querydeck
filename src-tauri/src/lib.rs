@@ -19,7 +19,7 @@ pub mod testkit {
     pub use crate::ddl::generate_table_ddl;
     pub use crate::drivers::{
         connect, ClickhouseParams, ConnectionProfile, DbConnection, Dialect, DriverParams,
-        RowEvent, SqliteParams,
+        DuckdbParams, RowEvent, SqliteParams, TrinoParams,
     };
     pub use crate::error::ErrorKind;
     pub use crate::sqlsplit::split_statements;
