@@ -6,6 +6,7 @@ mod error;
 mod history;
 mod objects;
 mod registry;
+mod secrets;
 mod sqlsplit;
 mod state;
 mod transfer;
@@ -52,7 +53,20 @@ fn profiles_list(state: State<'_, Arc<AppState>>) -> Vec<ConnectionProfile> {
 }
 
 #[tauri::command]
-fn profile_save(state: State<'_, Arc<AppState>>, profile: ConnectionProfile) -> AppResult<()> {
+fn profile_save(state: State<'_, Arc<AppState>>, mut profile: ConnectionProfile) -> AppResult<()> {
+    // Real passwords go to the OS keychain; the file keeps a sentinel. If the
+    // keychain refuses (locked/headless), fall back to storing plaintext so
+    // the credential is never lost.
+    let id = profile.id.clone();
+    if let Some(pw) = profile.password_mut() {
+        if pw == secrets::SENTINEL {
+            // unchanged — keychain already holds the real value
+        } else if pw.is_empty() {
+            secrets::delete(&id);
+        } else if secrets::store(&id, pw) {
+            *pw = secrets::SENTINEL.to_string();
+        }
+    }
     {
         let mut profiles = state.profiles.lock();
         if let Some(existing) = profiles.iter_mut().find(|p| p.id == profile.id) {
@@ -84,10 +98,11 @@ async fn profile_delete(state: State<'_, Arc<AppState>>, profile_id: String) -> 
     tauri::async_runtime::spawn_blocking(move || {
         state.close_profile_sessions(&profile_id);
         state.profiles.lock().retain(|p| p.id != profile_id);
-        // Deleting a connection also removes its local console files and
-        // history entries.
+        // Deleting a connection also removes its local console files,
+        // history entries and keychain credential.
         let _ = consoles::delete_all(&profile_id);
         let _ = history::purge_profile(&profile_id);
+        secrets::delete(&profile_id);
         state.save_profiles()
     })
     .await

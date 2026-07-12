@@ -75,6 +75,27 @@ impl AppState {
                 *self.profiles.lock() = list;
             }
         }
+        // One-time migration: move any plaintext passwords into the OS
+        // keychain, leaving the sentinel behind in the file.
+        let mut changed = false;
+        {
+            let mut profiles = self.profiles.lock();
+            for p in profiles.iter_mut() {
+                let id = p.id.clone();
+                if let Some(pw) = p.password_mut() {
+                    if !pw.is_empty()
+                        && pw != crate::secrets::SENTINEL
+                        && crate::secrets::store(&id, pw)
+                    {
+                        *pw = crate::secrets::SENTINEL.to_string();
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            let _ = self.save_profiles();
+        }
     }
 
     pub fn save_profiles(&self) -> AppResult<()> {

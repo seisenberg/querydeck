@@ -29,6 +29,19 @@ pub struct ConnectionProfile {
 }
 
 impl ConnectionProfile {
+    /// Mutable access to the profile's password field, for drivers that have
+    /// one (keychain storage). ODBC connection strings are left alone.
+    pub fn password_mut(&mut self) -> Option<&mut String> {
+        match &mut self.params {
+            DriverParams::Postgres(p) | DriverParams::Redshift(p) => Some(&mut p.password),
+            DriverParams::Mysql(p) | DriverParams::Mariadb(p) => Some(&mut p.password),
+            DriverParams::Mssql(p) => Some(&mut p.password),
+            DriverParams::Clickhouse(p) => Some(&mut p.password),
+            DriverParams::Jdbc(p) => Some(&mut p.password),
+            DriverParams::Sqlite(_) | DriverParams::Odbc(_) => None,
+        }
+    }
+
     /// A copy of this profile pointing at a different database (used by the
     /// per-tab database switcher). Drivers without a database concept are
     /// returned unchanged.
@@ -289,6 +302,20 @@ pub fn connect(profile: &ConnectionProfile) -> AppResult<Box<dyn DbConnection>> 
             crate::tunnels::ensure(tunnel_id)?;
         }
     }
+    // Passwords live in the OS keychain; the stored profile only carries a
+    // sentinel. Resolve it just-in-time for the actual connection.
+    let mut resolved = profile.clone();
+    let (id, name) = (resolved.id.clone(), resolved.name.clone());
+    if let Some(pw) = resolved.password_mut() {
+        if pw == crate::secrets::SENTINEL {
+            *pw = crate::secrets::fetch(&id).ok_or_else(|| {
+                AppError::config(format!(
+                    "password for \"{name}\" not found in the system keychain — re-enter it in Edit Connection"
+                ))
+            })?;
+        }
+    }
+    let profile = &resolved;
     match &profile.params {
         DriverParams::Sqlite(p) => Ok(Box::new(sqlite::SqliteConn::open(p)?)),
         DriverParams::Postgres(p) => Ok(Box::new(postgres::PostgresConn::open(p)?)),
