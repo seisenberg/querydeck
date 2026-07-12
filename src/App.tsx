@@ -14,6 +14,7 @@ import ImportWizard from "./components/ImportWizard";
 import ExportDialog from "./components/ExportDialog";
 import DriverManager from "./components/DriverManager";
 import FormatterSettings from "./components/FormatterSettings";
+import ActivityModal from "./components/ActivityModal";
 import StatusBar from "./components/StatusBar";
 
 export default function App() {
@@ -37,6 +38,7 @@ export default function App() {
   const setDriversModal = useStore((s) => s.setDriversModal);
   const connectionPicker = useStore((s) => s.connectionPicker);
   const formatterModal = useStore((s) => s.formatterModal);
+  const activityModal = useStore((s) => s.activityModal);
   const toast = useStore((s) => s.toast);
 
   useEffect(() => {
@@ -60,6 +62,15 @@ export default function App() {
       listen("open-formatter-settings", () =>
         useStore.getState().setFormatterModal(true),
       ),
+      // Backend work registry changed — keep the statusbar icon live.
+      listen("activity:changed", () => void useStore.getState().loadActivity()),
+      // A background schema refresh finished: pull the fresh catalog (it's
+      // in the backend cache now, so this is instant) and refresh objects.
+      listen<string>("catalog:updated", (ev) => {
+        const s = useStore.getState();
+        void s.loadCatalog(ev.payload);
+        if (s.objectsByProfile[ev.payload] !== undefined) void s.loadObjects(ev.payload);
+      }),
     ];
     return () => {
       for (const s of subs) void s.then((f) => f());
@@ -150,6 +161,7 @@ export default function App() {
       {tunnelsModal && <TunnelsModal />}
       {connectionPicker && <ConnectionPicker />}
       {formatterModal && <FormatterSettings />}
+      {activityModal && <ActivityModal />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );

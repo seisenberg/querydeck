@@ -3,6 +3,7 @@ import { format as sqlFormat } from "sql-formatter";
 import { splitStatements } from "./sqlsplit";
 import {
   api,
+  ActivityItem,
   Catalog,
   ConnectionProfile,
   ConsoleFile,
@@ -151,9 +152,12 @@ interface Store {
   tunnelsModal: boolean;
   connectionPicker: boolean;
   formatterModal: boolean;
+  activityModal: boolean;
   toast: string | null;
 
   appConfig: AppConfig;
+  /** Live backend work (queries + background jobs) for the status icon. */
+  activity: ActivityItem[];
 
   init(): Promise<void>;
   loadProfiles(): Promise<void>;
@@ -200,6 +204,10 @@ interface Store {
   setTunnelsModal(open: boolean): void;
   setConnectionPicker(open: boolean): void;
   setFormatterModal(open: boolean): void;
+  setActivityModal(open: boolean): void;
+  loadActivity(): Promise<void>;
+  /** Kill switch: drop the profile's sessions and clear its schema caches. */
+  killBackground(profileId: string): Promise<void>;
   setFormatterConfig(cfg: FormatterConfig): void;
   /** Edit → Reformat Query: pretty-print the active console's SQL. */
   reformatActiveTab(): void;
@@ -344,9 +352,11 @@ export const useStore = create<Store>((set, get) => {
     tunnelsModal: false,
     connectionPicker: false,
     formatterModal: false,
+    activityModal: false,
     toast: null,
 
     appConfig: {},
+    activity: [],
 
     async init() {
       await get().loadProfiles();
@@ -876,6 +886,33 @@ export const useStore = create<Store>((set, get) => {
     setFormatterModal(open) {
       set({ formatterModal: open });
     },
+    setActivityModal(open) {
+      set({ activityModal: open });
+      if (open) void get().loadActivity();
+    },
+    async loadActivity() {
+      try {
+        set({ activity: await api.activityList() });
+      } catch {
+        /* informational */
+      }
+    },
+    async killBackground(profileId) {
+      try {
+        await api.backgroundKill(profileId);
+        get().showToast("Disconnected; schema cache cleared");
+      } catch (e) {
+        get().showToast(errMessage(e));
+      }
+      // The tree should reflect the cleared cache.
+      set((s) => {
+        const catalogs = { ...s.catalogs };
+        delete catalogs[profileId];
+        return { catalogs };
+      });
+      void get().refreshSessions();
+      void get().loadActivity();
+    },
     setFormatterConfig(cfg) {
       const appConfig = { ...get().appConfig, formatter: cfg };
       set({ appConfig });
@@ -917,6 +954,7 @@ export const useStore = create<Store>((set, get) => {
         tunnelsModal: false,
         connectionPicker: false,
         formatterModal: false,
+        activityModal: false,
       });
     },
     showToast(msg) {

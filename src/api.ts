@@ -265,6 +265,15 @@ export interface EnvStatus {
   jvmDetail: string;
 }
 
+/** Live backend work item (statusbar activity icon / modal). */
+export interface ActivityItem {
+  id: number;
+  kind: "query" | "background";
+  label: string;
+  profileId: string;
+  startedMs: number;
+}
+
 export interface AppError {
   kind: string;
   message: string;
@@ -385,6 +394,10 @@ export const api = {
 
   odbcInventory: () => invoke<OdbcInventory>("odbc_inventory"),
   driversDir: () => invoke<string>("drivers_dir"),
+
+  activityList: () => invoke<ActivityItem[]>("activity_list"),
+  backgroundKill: (profileId: string) =>
+    invoke<void>("background_kill", { profileId }),
 };
 
 export function uid(): string {

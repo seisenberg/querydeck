@@ -41,9 +41,139 @@ use error::{AppError, AppResult};
 use state::AppState;
 use value::{ColumnMeta, DbValue};
 
-/// Catalog cache, keyed by profile id.
+/// Catalog cache, keyed by profile id: in-memory for the session, mirrored
+/// to disk so the tree renders instantly on the next launch. `refreshing`
+/// guards duplicate background refreshes per profile per app run.
 #[derive(Default)]
-struct CatalogCache(Mutex<HashMap<String, Catalog>>);
+struct CatalogCache {
+    mem: Mutex<HashMap<String, Catalog>>,
+    refreshed: Mutex<std::collections::HashSet<String>>,
+}
+
+impl CatalogCache {
+    fn dir() -> std::path::PathBuf {
+        dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("QueryDeck")
+            .join("catalog-cache")
+    }
+
+    fn disk_path(profile_id: &str) -> std::path::PathBuf {
+        // Profile ids are uid()-generated alphanumerics; sanitize anyway.
+        let safe: String = profile_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        Self::dir().join(format!("{safe}.json"))
+    }
+
+    fn disk_load(profile_id: &str) -> Option<Catalog> {
+        let bytes = std::fs::read(Self::disk_path(profile_id)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    fn disk_store(profile_id: &str, cat: &Catalog) {
+        let _ = std::fs::create_dir_all(Self::dir());
+        if let Ok(json) = serde_json::to_vec(cat) {
+            let _ = std::fs::write(Self::disk_path(profile_id), json);
+        }
+    }
+
+    fn disk_clear(profile_id: &str) {
+        let _ = std::fs::remove_file(Self::disk_path(profile_id));
+    }
+
+    fn put(&self, profile_id: &str, cat: &Catalog) {
+        self.mem.lock().insert(profile_id.to_string(), cat.clone());
+        Self::disk_store(profile_id, cat);
+    }
+}
+
+// ---------------------------------------------------------------- activity --
+
+/// Live work registry backing the statusbar activity icon: user queries and
+/// background jobs (schema loads, imports/exports, cache refreshes).
+#[derive(Default)]
+struct ActivityRegistry {
+    items: Mutex<HashMap<u64, ActivityItem>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Clone, Serialize)]
+struct ActivityItem {
+    id: u64,
+    /// "query" (user-initiated) | "background"
+    kind: String,
+    label: String,
+    #[serde(rename = "profileId")]
+    profile_id: String,
+    #[serde(rename = "startedMs")]
+    started_ms: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+impl ActivityRegistry {
+    fn begin(&self, app: &tauri::AppHandle, kind: &str, profile_id: &str, label: &str) -> u64 {
+        use tauri::Emitter;
+        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        self.items.lock().insert(
+            id,
+            ActivityItem {
+                id,
+                kind: kind.to_string(),
+                label: label.to_string(),
+                profile_id: profile_id.to_string(),
+                started_ms: now_ms(),
+            },
+        );
+        let _ = app.emit("activity:changed", ());
+        id
+    }
+
+    fn end(&self, app: &tauri::AppHandle, id: u64) {
+        use tauri::Emitter;
+        self.items.lock().remove(&id);
+        let _ = app.emit("activity:changed", ());
+    }
+
+    fn list(&self) -> Vec<ActivityItem> {
+        let mut v: Vec<ActivityItem> = self.items.lock().values().cloned().collect();
+        v.sort_by_key(|i| i.started_ms);
+        v
+    }
+}
+
+#[tauri::command]
+fn activity_list(activity: State<'_, Arc<ActivityRegistry>>) -> Vec<ActivityItem> {
+    activity.list()
+}
+
+/// Kill switch for stuck background work: drop every session of the profile
+/// and clear its cached schema (memory + disk).
+#[tauri::command]
+async fn background_kill(
+    state: State<'_, Arc<AppState>>,
+    cache: State<'_, Arc<CatalogCache>>,
+    profile_id: String,
+) -> AppResult<()> {
+    let state = state.inner().clone();
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.close_profile_sessions(&profile_id);
+        cache.mem.lock().remove(&profile_id);
+        cache.refreshed.lock().remove(&profile_id);
+        CatalogCache::disk_clear(&profile_id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
 
 // ---------------------------------------------------------------- profiles --
 
@@ -213,7 +343,9 @@ fn is_connection_error(message: &str) -> bool {
 
 #[tauri::command]
 async fn query_run(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
+    activity: State<'_, Arc<ActivityRegistry>>,
     profile_id: String,
     tab_id: String,
     sql: String,
@@ -221,8 +353,20 @@ async fn query_run(
     database: Option<String>,
 ) -> AppResult<RunResponse> {
     let state = state.inner().clone();
+    let activity = activity.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let started = std::time::Instant::now();
+        let label: String = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        let label: String = label.chars().take(80).collect();
+        let act = activity.begin(&app, "query", &profile_id, &label);
+        // Ensure the activity entry clears on every exit path.
+        struct ActGuard<'a>(&'a Arc<ActivityRegistry>, &'a tauri::AppHandle, u64);
+        impl Drop for ActGuard<'_> {
+            fn drop(&mut self) {
+                self.0.end(self.1, self.2);
+            }
+        }
+        let _guard = ActGuard(&activity, &app, act);
         let key = state::session_key(&profile_id, &tab_id);
         let flag = state.cancel_flag(&key);
         flag.store(false, Ordering::Relaxed);
@@ -454,23 +598,79 @@ fn with_meta_retry<T>(
     }
 }
 
+/// Refresh a profile's catalog from the live server in the background,
+/// updating the caches and notifying the frontend when done. At most one
+/// per profile per app run (the `refreshed` guard).
+fn spawn_catalog_refresh(
+    app: tauri::AppHandle,
+    state: Arc<AppState>,
+    cache: Arc<CatalogCache>,
+    activity: Arc<ActivityRegistry>,
+    profile_id: String,
+) {
+    {
+        let mut refreshed = cache.refreshed.lock();
+        if refreshed.contains(&profile_id) {
+            return;
+        }
+        refreshed.insert(profile_id.clone());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Emitter;
+        let name = state
+            .profile(&profile_id)
+            .map(|p| p.name)
+            .unwrap_or_else(|_| profile_id.clone());
+        let act = activity.begin(&app, "background", &profile_id, &format!("Refreshing schema — {name}"));
+        let result = with_meta_retry(&state, &profile_id, None, |conn| conn.catalog());
+        activity.end(&app, act);
+        if let Ok(cat) = result {
+            cache.put(&profile_id, &cat);
+            let _ = app.emit("catalog:updated", profile_id);
+        }
+    });
+}
+
 #[tauri::command]
 async fn catalog_get(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     cache: State<'_, Arc<CatalogCache>>,
+    activity: State<'_, Arc<ActivityRegistry>>,
     profile_id: String,
     refresh: bool,
 ) -> AppResult<Catalog> {
-    if !refresh {
-        if let Some(c) = cache.0.lock().get(&profile_id) {
-            return Ok(c.clone());
-        }
-    }
     let state = state.inner().clone();
     let cache = cache.inner().clone();
+    let activity = activity.inner().clone();
+    if !refresh {
+        if let Some(c) = cache.mem.lock().get(&profile_id) {
+            return Ok(c.clone());
+        }
+        // Disk cache: instant tree, then refresh from the live server in the
+        // background so it heals staleness without blocking the UI.
+        let pid = profile_id.clone();
+        let from_disk =
+            tauri::async_runtime::spawn_blocking(move || CatalogCache::disk_load(&pid))
+                .await
+                .map_err(|e| AppError::internal(e.to_string()))?;
+        if let Some(cat) = from_disk {
+            cache.mem.lock().insert(profile_id.clone(), cat.clone());
+            spawn_catalog_refresh(app, state, cache, activity, profile_id);
+            return Ok(cat);
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        let cat = with_meta_retry(&state, &profile_id, None, |conn| conn.catalog())?;
-        cache.0.lock().insert(profile_id, cat.clone());
+        let name = state
+            .profile(&profile_id)
+            .map(|p| p.name)
+            .unwrap_or_else(|_| profile_id.clone());
+        let act = activity.begin(&app, "background", &profile_id, &format!("Loading schema — {name}"));
+        let result = with_meta_retry(&state, &profile_id, None, |conn| conn.catalog());
+        activity.end(&app, act);
+        let cat = result?;
+        cache.put(&profile_id, &cat);
+        cache.refreshed.lock().insert(profile_id);
         Ok(cat)
     })
     .await
@@ -504,14 +704,14 @@ async fn ddl_get(
         }
         // Generate from catalog metadata (cached, or refreshed on miss).
         let dialect = state.with_conn(&profile_id, "meta", None, |conn| Ok(conn.dialect()))?;
-        let mut cat = cache.0.lock().get(&profile_id).cloned();
+        let mut cat = cache.mem.lock().get(&profile_id).cloned();
         if cat
             .as_ref()
             .map(|c| find_table(c, &schema, &table).is_none())
             .unwrap_or(true)
         {
             let fresh = with_meta_retry(&state, &profile_id, None, |conn| conn.catalog())?;
-            cache.0.lock().insert(profile_id.clone(), fresh.clone());
+            cache.put(&profile_id, &fresh);
             cat = Some(fresh);
         }
         let cat = cat.unwrap_or_default();
@@ -558,10 +758,18 @@ async fn import_preview(
 async fn import_run(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
+    activity: State<'_, Arc<ActivityRegistry>>,
     req: transfer::ImportRequest,
 ) -> AppResult<transfer::ImportResult> {
     let state = state.inner().clone();
+    let activity = activity.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let act = activity.begin(
+            &app,
+            "background",
+            &req.profile_id,
+            &format!("Importing into {}", req.table),
+        );
         let flag = {
             let mut jobs = state.job_flags.lock();
             jobs.entry(req.job_id.clone())
@@ -576,6 +784,7 @@ async fn import_run(
             });
         state.close_session(&req.profile_id, &tab);
         state.job_flags.lock().remove(&req.job_id);
+        activity.end(&app, act);
         result
     })
     .await
@@ -586,10 +795,18 @@ async fn import_run(
 async fn export_run(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
+    activity: State<'_, Arc<ActivityRegistry>>,
     req: transfer::ExportRequest,
 ) -> AppResult<transfer::ExportResult> {
     let state = state.inner().clone();
+    let activity = activity.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let act = activity.begin(
+            &app,
+            "background",
+            &req.profile_id,
+            &format!("Exporting {}", req.table_name),
+        );
         let flag = {
             let mut jobs = state.job_flags.lock();
             jobs.entry(req.job_id.clone())
@@ -604,6 +821,7 @@ async fn export_run(
             });
         state.close_session(&req.profile_id, &tab);
         state.job_flags.lock().remove(&req.job_id);
+        activity.end(&app, act);
         result
     })
     .await
@@ -644,13 +862,25 @@ async fn history_clear() -> AppResult<()> {
 
 #[tauri::command]
 async fn objects_list(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
+    activity: State<'_, Arc<ActivityRegistry>>,
     profile_id: String,
     database: Option<String>,
 ) -> AppResult<Vec<objects::DbObject>> {
     let state = state.inner().clone();
+    let activity = activity.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        with_meta_retry(&state, &profile_id, database.as_deref(), |conn| objects::list(conn.as_mut()))
+        let name = state
+            .profile(&profile_id)
+            .map(|p| p.name)
+            .unwrap_or_else(|_| profile_id.clone());
+        let act = activity.begin(&app, "background", &profile_id, &format!("Loading objects — {name}"));
+        let r = with_meta_retry(&state, &profile_id, database.as_deref(), |conn| {
+            objects::list(conn.as_mut())
+        });
+        activity.end(&app, act);
+        r
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
@@ -858,6 +1088,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .manage(Arc::new(CatalogCache::default()))
+        .manage(Arc::new(ActivityRegistry::default()))
         .setup(|app| {
             use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem, SubmenuBuilder};
             let show_history = MenuItemBuilder::with_id("show-history", "Show Query History…")
@@ -993,7 +1224,9 @@ pub fn run() {
             tunnel_stop,
             tunnels_status,
             odbc_inventory,
-            drivers_dir
+            drivers_dir,
+            activity_list,
+            background_kill
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
