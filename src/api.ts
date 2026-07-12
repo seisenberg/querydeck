@@ -338,6 +338,9 @@ export const api = {
   sessionStateSave: (json: string) => invoke<void>("session_state_save", { json }),
   sessionStateLoad: () => invoke<string | null>("session_state_load"),
 
+  configSave: (json: string) => invoke<void>("config_save", { json }),
+  configLoad: () => invoke<string | null>("config_load"),
+
   consoleSave: (console: ConsoleFile) => invoke<void>("console_save", { console }),
   consoleList: (profileId?: string) =>
     invoke<ConsoleFile[]>("console_list", { profileId: profileId || null }),

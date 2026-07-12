@@ -18,6 +18,9 @@ import type { DriverKind } from "../api";
 
 interface Props {
   initialSql: string;
+  /** Bumped by the store when it rewrites the SQL (e.g. Reformat Query);
+   * makes the editor reload `initialSql` even though it owns the doc. */
+  sqlEpoch?: number;
   driver: DriverKind | null;
   schema: SQLNamespace | undefined;
   /** Editor pane height as a fraction of the console split. */
@@ -92,6 +95,7 @@ function sqlDialect(driver: DriverKind | null) {
 
 export default function SqlEditor({
   initialSql,
+  sqlEpoch,
   driver,
   schema,
   heightPct,
@@ -180,6 +184,18 @@ export default function SqlEditor({
     // The editor owns the document after mount; initialSql is only the seed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Store-driven rewrite (Reformat Query): replace the doc, keep undo intact.
+  const lastEpoch = useRef(sqlEpoch);
+  useEffect(() => {
+    if (sqlEpoch === lastEpoch.current) return;
+    lastEpoch.current = sqlEpoch;
+    const view = viewRef.current;
+    if (!view || view.state.doc.toString() === initialSql) return;
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: initialSql },
+    });
+  }, [sqlEpoch, initialSql]);
 
   // Reconfigure language/completion when driver or schema changes.
   useEffect(() => {

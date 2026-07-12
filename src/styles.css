@@ -1109,6 +1109,21 @@ input[type="radio"] {
   background: var(--bg-elevated);
 }
 
+/* formatter settings preview */
+.formatter-preview {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre;
+}
+
 /* connection picker rows */
 .picker-section {
   font-size: 11px;

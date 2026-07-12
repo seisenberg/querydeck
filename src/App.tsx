@@ -13,6 +13,7 @@ import DdlModal from "./components/DdlModal";
 import ImportWizard from "./components/ImportWizard";
 import ExportDialog from "./components/ExportDialog";
 import DriverManager from "./components/DriverManager";
+import FormatterSettings from "./components/FormatterSettings";
 import StatusBar from "./components/StatusBar";
 
 export default function App() {
@@ -35,6 +36,7 @@ export default function App() {
   const setTunnelsModal = useStore((s) => s.setTunnelsModal);
   const setDriversModal = useStore((s) => s.setDriversModal);
   const connectionPicker = useStore((s) => s.connectionPicker);
+  const formatterModal = useStore((s) => s.formatterModal);
   const toast = useStore((s) => s.toast);
 
   useEffect(() => {
@@ -54,6 +56,10 @@ export default function App() {
         if (s.activeTabId) s.closeTab(s.activeTabId);
         else void getCurrentWindow().close();
       }),
+      listen("reformat-query", () => useStore.getState().reformatActiveTab()),
+      listen("open-formatter-settings", () =>
+        useStore.getState().setFormatterModal(true),
+      ),
     ];
     return () => {
       for (const s of subs) void s.then((f) => f());
@@ -143,6 +149,7 @@ export default function App() {
       {historyModal && <HistoryModal />}
       {tunnelsModal && <TunnelsModal />}
       {connectionPicker && <ConnectionPicker />}
+      {formatterModal && <FormatterSettings />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );

@@ -148,6 +148,7 @@ function QueryTab({ tab }: Props) {
       <div className="split-host" ref={splitRef}>
         <SqlEditor
           initialSql={tab.sql}
+          sqlEpoch={tab.sqlEpoch}
           driver={profile?.driver ?? null}
           schema={schemaNs}
           heightPct={editorFrac}

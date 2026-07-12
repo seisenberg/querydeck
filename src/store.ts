@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { format as sqlFormat } from "sql-formatter";
 import { splitStatements } from "./sqlsplit";
 import {
   api,
@@ -67,6 +68,47 @@ export interface ExportTarget {
   suggestedName: string;
 }
 
+/** User-tunable SQL formatter options, persisted in the app config file. */
+export interface FormatterConfig {
+  keywordCase: "upper" | "lower" | "preserve";
+  tabWidth: number;
+  linesBetweenQueries: number;
+  denseOperators: boolean;
+}
+
+export const DEFAULT_FORMATTER: FormatterConfig = {
+  keywordCase: "upper",
+  tabWidth: 2,
+  linesBetweenQueries: 1,
+  denseOperators: false,
+};
+
+/** Persistent application configuration (config.json in the app data dir). */
+export interface AppConfig {
+  formatter?: FormatterConfig;
+}
+
+/** sql-formatter language id for a connection's driver. */
+function formatterLanguage(driver: string | undefined): string {
+  switch (driver) {
+    case "postgres":
+    case "redshift":
+      return "postgresql";
+    case "mysql":
+    case "mariadb":
+      return "mysql";
+    case "sqlite":
+      return "sqlite";
+    case "mssql":
+      return "transactsql";
+    case "clickhouse":
+      // sql-formatter has no clickhouse dialect; standard SQL is closest.
+      return "sql";
+    default:
+      return "sql";
+  }
+}
+
 export const ROW_LIMITS = [100, 500, 1_000, 10_000, 100_000, 0] as const;
 
 export function limitLabel(l: number): string {
@@ -108,7 +150,10 @@ interface Store {
   historyModal: boolean;
   tunnelsModal: boolean;
   connectionPicker: boolean;
+  formatterModal: boolean;
   toast: string | null;
+
+  appConfig: AppConfig;
 
   init(): Promise<void>;
   loadProfiles(): Promise<void>;
@@ -154,6 +199,10 @@ interface Store {
   setHistoryModal(open: boolean): void;
   setTunnelsModal(open: boolean): void;
   setConnectionPicker(open: boolean): void;
+  setFormatterModal(open: boolean): void;
+  setFormatterConfig(cfg: FormatterConfig): void;
+  /** Edit → Reformat Query: pretty-print the active console's SQL. */
+  reformatActiveTab(): void;
   closeModals(): void;
   showToast(msg: string): void;
 }
@@ -294,7 +343,10 @@ export const useStore = create<Store>((set, get) => {
     historyModal: false,
     tunnelsModal: false,
     connectionPicker: false,
+    formatterModal: false,
     toast: null,
+
+    appConfig: {},
 
     async init() {
       await get().loadProfiles();
@@ -337,6 +389,13 @@ export const useStore = create<Store>((set, get) => {
 
       void get().loadClosedConsoles();
       void get().refreshSessions();
+      // Persistent app config (formatter options, …).
+      void api
+        .configLoad()
+        .then((raw) => {
+          if (raw) set({ appConfig: JSON.parse(raw) as AppConfig });
+        })
+        .catch(() => undefined);
       try {
         set({ env: await api.envStatus() });
       } catch {
@@ -814,6 +873,40 @@ export const useStore = create<Store>((set, get) => {
     setConnectionPicker(open) {
       set({ connectionPicker: open });
     },
+    setFormatterModal(open) {
+      set({ formatterModal: open });
+    },
+    setFormatterConfig(cfg) {
+      const appConfig = { ...get().appConfig, formatter: cfg };
+      set({ appConfig });
+      void api.configSave(JSON.stringify(appConfig, null, 2)).catch((e) =>
+        get().showToast(errMessage(e)),
+      );
+    },
+    reformatActiveTab() {
+      const s = get();
+      const tab = s.tabs.find((t) => t.id === s.activeTabId);
+      if (!tab || !tab.sql.trim()) return;
+      const driver = s.profiles.find((p) => p.id === tab.profileId)?.driver;
+      const cfg = s.appConfig.formatter ?? DEFAULT_FORMATTER;
+      try {
+        const formatted = sqlFormat(tab.sql, {
+          language: formatterLanguage(driver) as never,
+          keywordCase: cfg.keywordCase,
+          tabWidth: cfg.tabWidth,
+          linesBetweenQueries: cfg.linesBetweenQueries,
+          denseOperators: cfg.denseOperators,
+        });
+        set((st) => ({
+          tabs: st.tabs.map((t) =>
+            t.id === tab.id ? { ...t, sql: formatted, sqlEpoch: t.sqlEpoch + 1 } : t,
+          ),
+        }));
+        schedulePersist(get);
+      } catch (e) {
+        get().showToast(`Reformat failed: ${errMessage(e)}`);
+      }
+    },
     closeModals() {
       set({
         ddlModal: null,
@@ -823,6 +916,7 @@ export const useStore = create<Store>((set, get) => {
         historyModal: false,
         tunnelsModal: false,
         connectionPicker: false,
+        formatterModal: false,
       });
     },
     showToast(msg) {

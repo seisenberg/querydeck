@@ -721,6 +721,37 @@ async fn session_state_load() -> AppResult<Option<String>> {
         .map_err(|e| AppError::internal(e.to_string()))?
 }
 
+// -------------------------------------------------------------- app config --
+
+fn app_config_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("QueryDeck")
+        .join("config.json")
+}
+
+/// Persistent application configuration (formatter options, etc.). The JSON
+/// is owned by the frontend; the backend just stores it durably.
+#[tauri::command]
+async fn config_save(json: String) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = app_config_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(AppError::from)?;
+        }
+        std::fs::write(&path, json).map_err(AppError::from)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn config_load() -> AppResult<Option<String>> {
+    tauri::async_runtime::spawn_blocking(move || Ok(std::fs::read_to_string(app_config_path()).ok()))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
 // ----------------------------------------------------------------- tunnels --
 
 #[tauri::command]
@@ -845,6 +876,22 @@ pub fn run() {
                 }
             }
 
+            // Edit gains the query reformatter (and its settings).
+            if let Some(MenuItemKind::Submenu(edit_menu)) = items
+                .iter()
+                .find(|i| matches!(i, MenuItemKind::Submenu(s) if s.text().ok().as_deref() == Some("Edit")))
+            {
+                let reformat = MenuItemBuilder::with_id("reformat-query", "Reformat Query")
+                    .accelerator("CmdOrCtrl+Alt+L")
+                    .build(app)?;
+                let fmt_settings =
+                    MenuItemBuilder::with_id("formatter-settings", "Formatter Settings…")
+                        .build(app)?;
+                edit_menu.append(&PredefinedMenuItem::separator(app)?)?;
+                edit_menu.append(&reformat)?;
+                edit_menu.append(&fmt_settings)?;
+            }
+
             // Tunnels & drivers live under File (sidebar buttons were removed).
             if let Some(MenuItemKind::Submenu(file_menu)) = items
                 .iter()
@@ -878,6 +925,12 @@ pub fn run() {
                     }
                     "close-console" => {
                         let _ = app.emit("close-console", ());
+                    }
+                    "reformat-query" => {
+                        let _ = app.emit("reformat-query", ());
+                    }
+                    "formatter-settings" => {
+                        let _ = app.emit("open-formatter-settings", ());
                     }
                     _ => {}
                 }
@@ -916,6 +969,8 @@ pub fn run() {
             console_delete,
             session_state_save,
             session_state_load,
+            config_save,
+            config_load,
             tunnels_list,
             tunnel_save,
             tunnel_delete,
