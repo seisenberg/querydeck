@@ -2,7 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 
 // ---- Types mirrored from the Rust backend ----
 
-export type DriverKind = "sqlite" | "postgres" | "mysql" | "odbc" | "jdbc";
+export type DriverKind =
+  | "sqlite"
+  | "postgres"
+  | "redshift"
+  | "mysql"
+  | "mariadb"
+  | "mssql"
+  | "clickhouse"
+  | "odbc"
+  | "jdbc";
 
 export interface SqliteParams {
   path: string;
@@ -25,6 +34,24 @@ export interface MysqlParams {
   use_ssl: boolean;
   accept_invalid_certs: boolean;
 }
+export interface MssqlParams {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  encrypt: boolean;
+  accept_invalid_certs: boolean;
+}
+export interface ClickhouseParams {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  use_https: boolean;
+  accept_invalid_certs: boolean;
+}
 export interface OdbcParams {
   connection_string: string;
 }
@@ -40,6 +67,8 @@ export type DriverParams =
   | SqliteParams
   | PostgresParams
   | MysqlParams
+  | MssqlParams
+  | ClickhouseParams
   | OdbcParams
   | JdbcParams;
 

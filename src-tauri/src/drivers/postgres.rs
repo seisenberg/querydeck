@@ -19,6 +19,9 @@ pub struct PostgresConn {
     client: Client,
     cancel_token: CancelToken,
     tls: MakeRustlsConnect,
+    /// Redshift speaks the PG wire protocol but is PG-8-era: some catalog
+    /// views/functions are missing, so introspection degrades gracefully.
+    redshift: bool,
 }
 
 /// rustls verifier that accepts any server certificate (opt-in, for dev DBs
@@ -89,6 +92,14 @@ fn make_tls(accept_invalid: bool) -> AppResult<MakeRustlsConnect> {
 
 impl PostgresConn {
     pub fn open(params: &PostgresParams) -> AppResult<Self> {
+        Self::open_inner(params, false)
+    }
+
+    pub fn open_redshift(params: &PostgresParams) -> AppResult<Self> {
+        Self::open_inner(params, true)
+    }
+
+    fn open_inner(params: &PostgresParams, redshift: bool) -> AppResult<Self> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -121,7 +132,7 @@ impl PostgresConn {
         });
 
         let cancel_token = client.cancel_token();
-        Ok(Self { rt, client, cancel_token, tls })
+        Ok(Self { rt, client, cancel_token, tls, redshift })
     }
 
     fn simple_rows(&mut self, sql: &str) -> AppResult<Vec<Vec<Option<String>>>> {
@@ -140,6 +151,12 @@ impl PostgresConn {
             }
         }
         Ok(rows)
+    }
+
+    /// Best-effort variant for introspection queries that may not exist on
+    /// every PG-compatible engine (Redshift, forks, restricted users).
+    fn simple_rows_or_empty(&mut self, sql: &str) -> Vec<Vec<Option<String>>> {
+        self.simple_rows(sql).unwrap_or_default()
     }
 
     /// A cancel handle usable from another thread.
@@ -269,7 +286,10 @@ impl DbConnection for PostgresConn {
              ORDER BY n.nspname, c.relname"
         ))?;
 
-        let cols = self.simple_rows(&format!(
+        // Everything past the relation list is best-effort: a missing view
+        // (Redshift, exotic PG forks, restricted users) must not blank the
+        // whole tree.
+        let cols = self.simple_rows_or_empty(&format!(
             "SELECT n.nspname, c.relname, a.attname, \
                     format_type(a.atttypid, a.atttypmod), \
                     a.attnotnull::text, pg_get_expr(d.adbin, d.adrelid) \
@@ -280,9 +300,11 @@ impl DbConnection for PostgresConn {
              WHERE a.attnum > 0 AND NOT a.attisdropped \
                AND c.relkind IN ('r','v','m','p','f') AND n.nspname NOT IN {HIDDEN} \
              ORDER BY n.nspname, c.relname, a.attnum"
-        ))?;
+        ));
 
-        let pks = self.simple_rows(&format!(
+        // array_position is PG 9.5+; Redshift (and very old PG) fall back to
+        // attnum order, which matches the PK column order in practice.
+        let pks_exact = self.simple_rows(&format!(
             "SELECT n.nspname, c.relname, a.attname \
              FROM pg_index i \
              JOIN pg_class c ON c.oid = i.indrelid \
@@ -290,20 +312,37 @@ impl DbConnection for PostgresConn {
              JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) \
              WHERE i.indisprimary AND n.nspname NOT IN {HIDDEN} \
              ORDER BY n.nspname, c.relname, array_position(i.indkey, a.attnum)"
-        ))?;
+        ));
+        let pks = match pks_exact {
+            Ok(rows) => rows,
+            Err(_) => self.simple_rows_or_empty(&format!(
+                "SELECT n.nspname, c.relname, a.attname \
+                 FROM pg_index i \
+                 JOIN pg_class c ON c.oid = i.indrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) \
+                 WHERE i.indisprimary AND n.nspname NOT IN {HIDDEN} \
+                 ORDER BY n.nspname, c.relname, a.attnum"
+            )),
+        };
 
-        let indexes = self.simple_rows(&format!(
-            "SELECT schemaname, tablename, indexdef FROM pg_indexes \
-             WHERE schemaname NOT IN {HIDDEN} ORDER BY schemaname, tablename, indexname"
-        ))?;
+        // Redshift has no indexes (and no pg_indexes view) — skip the query.
+        let indexes = if self.redshift {
+            Vec::new()
+        } else {
+            self.simple_rows_or_empty(&format!(
+                "SELECT schemaname, tablename, indexdef FROM pg_indexes \
+                 WHERE schemaname NOT IN {HIDDEN} ORDER BY schemaname, tablename, indexname"
+            ))
+        };
 
-        let fks = self.simple_rows(&format!(
+        let fks = self.simple_rows_or_empty(&format!(
             "SELECT n.nspname, c.relname, pg_get_constraintdef(t.oid) \
              FROM pg_constraint t \
              JOIN pg_class c ON c.oid = t.conrelid \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE t.contype = 'f' AND n.nspname NOT IN {HIDDEN}"
-        ))?;
+        ));
 
         let mut schemas: BTreeMap<String, BTreeMap<String, TableInfo>> = BTreeMap::new();
         for row in rels {

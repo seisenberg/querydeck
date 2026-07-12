@@ -56,13 +56,19 @@ fn lit(dialect: Dialect, s: &str) -> String {
     format!("'{}'", dialect.escape_str(s))
 }
 
+/// Tolerant query: introspection must degrade per-section, never blank the
+/// whole "Other objects" list because one view is missing on this engine.
+fn query_ok(conn: &mut dyn DbConnection, sql: &str) -> Vec<Vec<DbValue>> {
+    query(conn, sql).unwrap_or_default()
+}
+
 pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
     let dialect = conn.dialect();
     let mut out: Vec<DbObject> = Vec::new();
 
     match dialect {
         Dialect::Postgres => {
-            for r in query(
+            for r in query_ok(
                 conn,
                 "SELECT n.nspname, p.proname, \
                         CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END, \
@@ -70,7 +76,7 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
                  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
                  WHERE n.nspname NOT IN ('pg_catalog','information_schema') \
                    AND p.prokind IN ('f','p') ORDER BY 1, 2",
-            )? {
+            ) {
                 out.push(DbObject {
                     schema: Some(text(&r[0])),
                     name: text(&r[1]),
@@ -78,10 +84,10 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
                     detail: Some(text(&r[3])),
                 });
             }
-            for r in query(
+            for r in query_ok(
                 conn,
                 "SELECT schemaname, sequencename FROM pg_sequences ORDER BY 1, 2",
-            )? {
+            ) {
                 out.push(DbObject {
                     schema: Some(text(&r[0])),
                     name: text(&r[1]),
@@ -89,14 +95,14 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
                     detail: None,
                 });
             }
-            for r in query(
+            for r in query_ok(
                 conn,
                 "SELECT DISTINCT n.nspname, t.tgname, c.relname \
                  FROM pg_trigger t \
                  JOIN pg_class c ON c.oid = t.tgrelid \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
                  WHERE NOT t.tgisinternal ORDER BY 1, 2",
-            )? {
+            ) {
                 out.push(DbObject {
                     schema: Some(text(&r[0])),
                     name: text(&r[1]),
@@ -104,11 +110,11 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
                     detail: Some(text(&r[2])),
                 });
             }
-            for r in query(
+            for r in query_ok(
                 conn,
                 "SELECT rolname, CASE WHEN rolcanlogin THEN 'login role' ELSE 'group role' END \
                  FROM pg_roles WHERE rolname NOT LIKE 'pg\\_%' ORDER BY 1",
-            )? {
+            ) {
                 out.push(DbObject {
                     schema: None,
                     name: text(&r[0]),
@@ -118,12 +124,12 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
             }
         }
         Dialect::Mysql => {
-            for r in query(
+            for r in query_ok(
                 conn,
                 "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, LOWER(ROUTINE_TYPE) \
                  FROM information_schema.ROUTINES \
                  WHERE ROUTINE_SCHEMA = DATABASE() ORDER BY 1, 2",
-            )? {
+            ) {
                 out.push(DbObject {
                     schema: Some(text(&r[0])),
                     name: text(&r[1]),
@@ -131,12 +137,12 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
                     detail: None,
                 });
             }
-            for r in query(
+            for r in query_ok(
                 conn,
                 "SELECT TRIGGER_SCHEMA, TRIGGER_NAME, EVENT_OBJECT_TABLE \
                  FROM information_schema.TRIGGERS \
                  WHERE TRIGGER_SCHEMA = DATABASE() ORDER BY 1, 2",
-            )? {
+            ) {
                 out.push(DbObject {
                     schema: Some(text(&r[0])),
                     name: text(&r[1]),
@@ -146,10 +152,10 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
             }
         }
         Dialect::Sqlite => {
-            for r in query(
+            for r in query_ok(
                 conn,
                 "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY 1",
-            )? {
+            ) {
                 out.push(DbObject {
                     schema: Some("main".into()),
                     name: text(&r[0]),
@@ -158,19 +164,99 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
                 });
             }
         }
-        Dialect::Generic => {
-            // Best effort: engines reachable over ODBC/JDBC that expose an
-            // ANSI information_schema (Postgres, MySQL, SQL Server, …).
-            for r in query(
+        Dialect::Mssql => {
+            for r in query_ok(
                 conn,
-                "SELECT routine_schema, routine_name, LOWER(routine_type) \
-                 FROM information_schema.routines ORDER BY 1, 2",
-            )? {
+                "SELECT s.name, o.name, \
+                        CASE WHEN o.type = 'P' THEN 'procedure' ELSE 'function' END \
+                 FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id \
+                 WHERE o.type IN ('P','FN','IF','TF') AND o.is_ms_shipped = 0 \
+                 ORDER BY 1, 2",
+            ) {
                 out.push(DbObject {
                     schema: Some(text(&r[0])),
                     name: text(&r[1]),
                     kind: text(&r[2]),
                     detail: None,
+                });
+            }
+            for r in query_ok(
+                conn,
+                "SELECT s.name, sq.name FROM sys.sequences sq \
+                 JOIN sys.schemas s ON s.schema_id = sq.schema_id ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "sequence".into(),
+                    detail: None,
+                });
+            }
+            for r in query_ok(
+                conn,
+                "SELECT s.name, tr.name, o.name FROM sys.triggers tr \
+                 JOIN sys.objects o ON o.object_id = tr.parent_id \
+                 JOIN sys.schemas s ON s.schema_id = o.schema_id \
+                 WHERE tr.is_ms_shipped = 0 ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "trigger".into(),
+                    detail: Some(text(&r[2])),
+                });
+            }
+        }
+        Dialect::Clickhouse => {
+            for r in query_ok(
+                conn,
+                "SELECT name, if(origin = 'SQLUserDefined', 'user defined', origin) \
+                 FROM system.functions WHERE origin != 'System' ORDER BY 1",
+            ) {
+                out.push(DbObject {
+                    schema: None,
+                    name: text(&r[0]),
+                    kind: "function".into(),
+                    detail: Some(text(&r[1])),
+                });
+            }
+            for r in query_ok(
+                conn,
+                "SELECT database, name, status FROM system.dictionaries ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "dictionary".into(),
+                    detail: Some(text(&r[2])),
+                });
+            }
+        }
+        Dialect::Generic => {
+            // Best effort: engines reachable over ODBC/JDBC that expose an
+            // ANSI information_schema (Postgres, MySQL, SQL Server, …).
+            for r in query_ok(
+                conn,
+                "SELECT routine_schema, routine_name, LOWER(routine_type) \
+                 FROM information_schema.routines ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: text(&r[2]),
+                    detail: None,
+                });
+            }
+            for r in query_ok(
+                conn,
+                "SELECT trigger_schema, trigger_name, event_object_table \
+                 FROM information_schema.triggers ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "trigger".into(),
+                    detail: Some(text(&r[2])),
                 });
             }
         }
@@ -279,6 +365,45 @@ pub fn ddl(
         )?
         .first()
         .map(|r| format!("{};", text(&r[0]))),
+        (Dialect::Mssql, "function" | "procedure" | "trigger") => query(
+            conn,
+            &format!(
+                "SELECT OBJECT_DEFINITION(OBJECT_ID({}))",
+                lit(d, &format!("{schema}.{name}"))
+            ),
+        )?
+        .first()
+        .and_then(|r| {
+            let t = text(&r[0]);
+            (!t.is_empty()).then(|| t.trim().to_string())
+        }),
+        (Dialect::Mssql, "sequence") => query(
+            conn,
+            &format!(
+                "SELECT CONCAT('CREATE SEQUENCE ', QUOTENAME(s.name), '.', QUOTENAME(sq.name), \
+                        ' START WITH ', CAST(sq.start_value AS varchar(40)), \
+                        ' INCREMENT BY ', CAST(sq.increment AS varchar(40)), ';') \
+                 FROM sys.sequences sq JOIN sys.schemas s ON s.schema_id = sq.schema_id \
+                 WHERE s.name = {} AND sq.name = {}",
+                lit(d, schema),
+                lit(d, name)
+            ),
+        )?
+        .first()
+        .map(|r| text(&r[0])),
+        (Dialect::Clickhouse, "dictionary") => query(
+            conn,
+            &format!(
+                "SELECT create_table_query FROM system.tables WHERE database = {} AND name = {}",
+                lit(d, schema),
+                lit(d, name)
+            ),
+        )?
+        .first()
+        .and_then(|r| {
+            let t = text(&r[0]);
+            (!t.is_empty()).then_some(t)
+        }),
         (Dialect::Generic, "function" | "procedure") => query(
             conn,
             &format!(

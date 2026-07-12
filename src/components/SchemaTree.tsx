@@ -623,8 +623,9 @@ function TableNode({
 }
 
 function quoteFor(driver: string | undefined, schema: string, table: string): string {
+  const backtick = driver === "mysql" || driver === "mariadb" || driver === "clickhouse";
   const q = (s: string) =>
-    driver === "mysql" ? `\`${s.replace(/`/g, "``")}\`` : `"${s.replace(/"/g, '""')}"`;
+    backtick ? `\`${s.replace(/`/g, "``")}\`` : `"${s.replace(/"/g, '""')}"`;
   const plain = (s: string) => /^[a-z_][a-z0-9_]*$/.test(s);
   const part = (s: string) => (plain(s) ? s : q(s));
   if (!schema || schema === "main" || schema === "(default)") return part(table);

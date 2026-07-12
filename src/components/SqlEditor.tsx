@@ -9,7 +9,16 @@ import {
 } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { sql, SQLNamespace, StandardSQL, PostgreSQL, MySQL, SQLite } from "@codemirror/lang-sql";
+import {
+  sql,
+  SQLNamespace,
+  StandardSQL,
+  PostgreSQL,
+  MySQL,
+  MariaSQL,
+  MSSQL,
+  SQLite,
+} from "@codemirror/lang-sql";
 import {
   autocompletion,
   completionKeymap,
@@ -250,9 +259,15 @@ const EMPTY_WORDS = new Set<string>();
 function sqlDialect(driver: DriverKind | null) {
   switch (driver) {
     case "postgres":
+    case "redshift":
       return PostgreSQL;
     case "mysql":
+    case "clickhouse":
       return MySQL;
+    case "mariadb":
+      return MariaSQL;
+    case "mssql":
+      return MSSQL;
     case "sqlite":
       return SQLite;
     default:

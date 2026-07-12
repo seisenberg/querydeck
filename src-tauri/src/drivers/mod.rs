@@ -1,6 +1,8 @@
 pub mod sqlite;
 pub mod postgres;
 pub mod mysql;
+pub mod mssql;
+pub mod clickhouse;
 pub mod odbc;
 pub mod jdbc;
 
@@ -35,8 +37,14 @@ impl ConnectionProfile {
         if let Some(db) = database {
             if !db.is_empty() {
                 match &mut p.params {
-                    DriverParams::Postgres(pg) => pg.database = db.to_string(),
-                    DriverParams::Mysql(my) => my.database = db.to_string(),
+                    DriverParams::Postgres(pg) | DriverParams::Redshift(pg) => {
+                        pg.database = db.to_string()
+                    }
+                    DriverParams::Mysql(my) | DriverParams::Mariadb(my) => {
+                        my.database = db.to_string()
+                    }
+                    DriverParams::Mssql(ms) => ms.database = db.to_string(),
+                    DriverParams::Clickhouse(ch) => ch.database = db.to_string(),
                     _ => {}
                 }
             }
@@ -50,7 +58,14 @@ impl ConnectionProfile {
 pub enum DriverParams {
     Sqlite(SqliteParams),
     Postgres(PostgresParams),
+    /// Amazon Redshift speaks the Postgres wire protocol; it shares
+    /// PostgresParams but gets tolerant catalog queries (PG 8 era views).
+    Redshift(PostgresParams),
     Mysql(MysqlParams),
+    /// MariaDB shares the MySQL wire protocol and parameters.
+    Mariadb(MysqlParams),
+    Mssql(MssqlParams),
+    Clickhouse(ClickhouseParams),
     Odbc(OdbcParams),
     Jdbc(JdbcParams),
 }
@@ -95,6 +110,43 @@ pub struct MysqlParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MssqlParams {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub database: String,
+    /// Require TLS on the connection (SQL Server encrypts by default).
+    #[serde(default = "default_true")]
+    pub encrypt: bool,
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClickhouseParams {
+    pub host: String,
+    /// HTTP interface port (8123 plain, 8443 TLS).
+    pub port: u16,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub database: String,
+    #[serde(default)]
+    pub use_https: bool,
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OdbcParams {
     /// Full ODBC connection string, e.g. `Driver={...};Server=...;` or `DSN=name;`
     pub connection_string: String,
@@ -120,21 +172,25 @@ pub enum Dialect {
     Sqlite,
     Postgres,
     Mysql,
+    Mssql,
+    Clickhouse,
     Generic,
 }
 
 impl Dialect {
     pub fn quote_ident(&self, ident: &str) -> String {
         match self {
-            Dialect::Mysql => format!("`{}`", ident.replace('`', "``")),
+            Dialect::Mysql | Dialect::Clickhouse => format!("`{}`", ident.replace('`', "``")),
             _ => format!("\"{}\"", ident.replace('"', "\"\"")),
         }
     }
 
     pub fn escape_str(&self, s: &str) -> String {
         match self {
-            // MySQL treats backslash as an escape character inside strings.
-            Dialect::Mysql => s.replace('\\', "\\\\").replace('\'', "''"),
+            // MySQL and ClickHouse treat backslash as an escape character.
+            Dialect::Mysql | Dialect::Clickhouse => {
+                s.replace('\\', "\\\\").replace('\'', "''")
+            }
             _ => s.replace('\'', "''"),
         }
     }
@@ -143,7 +199,10 @@ impl Dialect {
         match v {
             DbValue::Null => "NULL".into(),
             DbValue::Bool(b) => {
-                if *self == Dialect::Sqlite || *self == Dialect::Mysql {
+                if matches!(
+                    self,
+                    Dialect::Sqlite | Dialect::Mysql | Dialect::Mssql | Dialect::Clickhouse
+                ) {
                     if *b { "1".into() } else { "0".into() }
                 } else if *b {
                     "TRUE".into()
@@ -233,7 +292,14 @@ pub fn connect(profile: &ConnectionProfile) -> AppResult<Box<dyn DbConnection>> 
     match &profile.params {
         DriverParams::Sqlite(p) => Ok(Box::new(sqlite::SqliteConn::open(p)?)),
         DriverParams::Postgres(p) => Ok(Box::new(postgres::PostgresConn::open(p)?)),
-        DriverParams::Mysql(p) => Ok(Box::new(mysql::MysqlConn::open(p)?)),
+        DriverParams::Redshift(p) => {
+            Ok(Box::new(postgres::PostgresConn::open_redshift(p)?))
+        }
+        DriverParams::Mysql(p) | DriverParams::Mariadb(p) => {
+            Ok(Box::new(mysql::MysqlConn::open(p)?))
+        }
+        DriverParams::Mssql(p) => Ok(Box::new(mssql::MssqlConn::open(p)?)),
+        DriverParams::Clickhouse(p) => Ok(Box::new(clickhouse::ClickhouseConn::open(p)?)),
         DriverParams::Odbc(p) => Ok(Box::new(odbc::OdbcConn::open(p)?)),
         DriverParams::Jdbc(p) => Ok(Box::new(jdbc::JdbcConn::open(p)?)),
     }

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
+  ClickhouseParams,
   ConnectionProfile,
   DriverKind,
   JdbcParams,
+  MssqlParams,
   MysqlParams,
   OdbcInventory,
   OdbcParams,
@@ -19,7 +21,11 @@ import { useStore } from "../store";
 const DRIVER_LABELS: Record<DriverKind, string> = {
   sqlite: "SQLite",
   postgres: "PostgreSQL",
-  mysql: "MySQL / MariaDB",
+  redshift: "Redshift",
+  mysql: "MySQL",
+  mariadb: "MariaDB",
+  mssql: "SQL Server",
+  clickhouse: "ClickHouse",
   odbc: "ODBC",
   jdbc: "JDBC",
 };
@@ -38,7 +44,18 @@ function defaultParams(kind: DriverKind): ConnectionProfile["params"] {
         ssl_mode: "prefer",
         accept_invalid_certs: false,
       } as PostgresParams;
+    case "redshift":
+      return {
+        host: "",
+        port: 5439,
+        user: "awsuser",
+        password: "",
+        database: "dev",
+        ssl_mode: "require",
+        accept_invalid_certs: false,
+      } as PostgresParams;
     case "mysql":
+    case "mariadb":
       return {
         host: "localhost",
         port: 3306,
@@ -48,6 +65,26 @@ function defaultParams(kind: DriverKind): ConnectionProfile["params"] {
         use_ssl: false,
         accept_invalid_certs: false,
       } as MysqlParams;
+    case "mssql":
+      return {
+        host: "localhost",
+        port: 1433,
+        user: "sa",
+        password: "",
+        database: "",
+        encrypt: true,
+        accept_invalid_certs: false,
+      } as MssqlParams;
+    case "clickhouse":
+      return {
+        host: "localhost",
+        port: 8123,
+        user: "default",
+        password: "",
+        database: "",
+        use_https: false,
+        accept_invalid_certs: false,
+      } as ClickhouseParams;
     case "odbc":
       return { connection_string: "Driver={};Server=;Database=;" } as OdbcParams;
     case "jdbc":
@@ -59,6 +96,18 @@ function defaultParams(kind: DriverKind): ConnectionProfile["params"] {
         password: "",
       } as JdbcParams;
   }
+}
+
+/** Drivers configured with host/port/database/user/password. */
+function isServerDriver(d: DriverKind): boolean {
+  return (
+    d === "postgres" ||
+    d === "redshift" ||
+    d === "mysql" ||
+    d === "mariadb" ||
+    d === "mssql" ||
+    d === "clickhouse"
+  );
 }
 
 export default function ConnectionModal() {
@@ -236,7 +285,7 @@ export default function ConnectionModal() {
               </>
             )}
 
-            {(driver === "postgres" || driver === "mysql") && (
+            {isServerDriver(driver) && (
               <>
                 <label>Host</label>
                 <div className="form-row-inline">
@@ -244,6 +293,11 @@ export default function ConnectionModal() {
                     style={{ flex: 1 }}
                     value={(p as PostgresParams).host}
                     onChange={(e) => set({ host: e.target.value } as never)}
+                    placeholder={
+                      driver === "redshift"
+                        ? "cluster.xxxxxx.region.redshift.amazonaws.com"
+                        : ""
+                    }
                   />
                   <label>Port</label>
                   <input
@@ -257,7 +311,9 @@ export default function ConnectionModal() {
                 <input
                   value={(p as PostgresParams).database}
                   onChange={(e) => set({ database: e.target.value } as never)}
-                  placeholder={driver === "mysql" ? "(optional)" : ""}
+                  placeholder={
+                    driver === "postgres" || driver === "redshift" ? "" : "(optional)"
+                  }
                 />
                 <label>User</label>
                 <input
@@ -270,55 +326,59 @@ export default function ConnectionModal() {
                   value={(p as PostgresParams).password}
                   onChange={(e) => set({ password: e.target.value } as never)}
                 />
-                {driver === "postgres" ? (
-                  <>
-                    <label>SSL</label>
-                    <div className="form-row-inline">
-                      <select
-                        value={(p as PostgresParams).ssl_mode}
-                        onChange={(e) => set({ ssl_mode: e.target.value } as never)}
-                      >
-                        <option value="disable">disable</option>
-                        <option value="prefer">prefer</option>
-                        <option value="require">require</option>
-                      </select>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={(p as PostgresParams).accept_invalid_certs}
-                          onChange={(e) =>
-                            set({ accept_invalid_certs: e.target.checked } as never)
-                          }
-                        />{" "}
-                        trust self-signed certs
-                      </label>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <label>SSL</label>
-                    <div className="form-row-inline">
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={(p as MysqlParams).use_ssl}
-                          onChange={(e) => set({ use_ssl: e.target.checked } as never)}
-                        />{" "}
-                        use TLS
-                      </label>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={(p as MysqlParams).accept_invalid_certs}
-                          onChange={(e) =>
-                            set({ accept_invalid_certs: e.target.checked } as never)
-                          }
-                        />{" "}
-                        trust self-signed certs
-                      </label>
-                    </div>
-                  </>
-                )}
+                <label>SSL</label>
+                <div className="form-row-inline">
+                  {(driver === "postgres" || driver === "redshift") && (
+                    <select
+                      value={(p as PostgresParams).ssl_mode}
+                      onChange={(e) => set({ ssl_mode: e.target.value } as never)}
+                    >
+                      <option value="disable">disable</option>
+                      <option value="prefer">prefer</option>
+                      <option value="require">require</option>
+                    </select>
+                  )}
+                  {(driver === "mysql" || driver === "mariadb") && (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={(p as MysqlParams).use_ssl}
+                        onChange={(e) => set({ use_ssl: e.target.checked } as never)}
+                      />{" "}
+                      use TLS
+                    </label>
+                  )}
+                  {driver === "mssql" && (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={(p as MssqlParams).encrypt}
+                        onChange={(e) => set({ encrypt: e.target.checked } as never)}
+                      />{" "}
+                      encrypt connection
+                    </label>
+                  )}
+                  {driver === "clickhouse" && (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={(p as ClickhouseParams).use_https}
+                        onChange={(e) => set({ use_https: e.target.checked } as never)}
+                      />{" "}
+                      HTTPS (port 8443)
+                    </label>
+                  )}
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={(p as PostgresParams).accept_invalid_certs}
+                      onChange={(e) =>
+                        set({ accept_invalid_certs: e.target.checked } as never)
+                      }
+                    />{" "}
+                    trust self-signed certs
+                  </label>
+                </div>
               </>
             )}
 

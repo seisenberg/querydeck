@@ -7,6 +7,8 @@ import { ConnectionProfile, JdbcParams } from "../api";
 export type EngineKind =
   | "sqlite"
   | "postgres"
+  | "redshift"
+  | "snowflake"
   | "mysql"
   | "mariadb"
   | "duckdb"
@@ -24,12 +26,22 @@ export function engineOf(profile: ConnectionProfile): EngineKind {
       return "sqlite";
     case "postgres":
       return "postgres";
+    case "redshift":
+      return "redshift";
     case "mysql":
       return "mysql";
+    case "mariadb":
+      return "mariadb";
+    case "mssql":
+      return "mssql";
+    case "clickhouse":
+      return "clickhouse";
     case "odbc":
       return "odbc";
     case "jdbc": {
       const cls = ((profile.params as JdbcParams).driver_class ?? "").toLowerCase();
+      if (cls.includes("redshift")) return "redshift";
+      if (cls.includes("snowflake")) return "snowflake";
       if (cls.includes("postgresql")) return "postgres";
       if (cls.includes("mariadb")) return "mariadb";
       if (cls.includes("mysql")) return "mysql";
@@ -47,6 +59,8 @@ export function engineOf(profile: ConnectionProfile): EngineKind {
 
 const ENGINE_COLORS: Record<EngineKind, string> = {
   postgres: "#699eca",
+  redshift: "#5c9ded",
+  snowflake: "#29b5e8",
   mysql: "#e48e00",
   mariadb: "#c0765a",
   sqlite: "#67b8e3",
@@ -62,6 +76,8 @@ const ENGINE_COLORS: Record<EngineKind, string> = {
 
 const ENGINE_MARKS: Record<EngineKind, string> = {
   postgres: "Pg",
+  redshift: "Rs",
+  snowflake: "Sf",
   mysql: "My",
   mariadb: "Ma",
   sqlite: "Sq",
