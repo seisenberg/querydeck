@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store";
+import { dropIndex } from "../dragorder";
 
 /** Shared mousedown handler for window drag regions (sidebar header, tab
  * strip). Manual startDragging is used instead of data-tauri-drag-region so
@@ -69,14 +70,21 @@ export default function TabBar() {
       setDraggingId(d.id);
     }
     e.preventDefault();
-    // Target slot: first tab whose midpoint is right of the pointer.
-    const nodes = Array.from(scrollRef.current.querySelectorAll<HTMLElement>(".tab"));
-    let to = nodes.findIndex((n) => {
-      const r = n.getBoundingClientRect();
-      return e.clientX < r.left + r.width / 2;
-    });
-    if (to === -1) to = nodes.length - 1;
-    moveTab(d.id, to);
+    // Target slot from transform-independent layout geometry (offsetLeft),
+    // measuring only the *other* tabs. getBoundingClientRect would report the
+    // in-flight FLIP transform, so mid-animation reads move the midpoints and
+    // the target oscillates — the flicker. offsetLeft is the resting layout
+    // position, immune to transforms; the scroll container is its offsetParent.
+    const cont = scrollRef.current;
+    const contRect = cont.getBoundingClientRect();
+    const pointer = e.clientX - contRect.left - cont.clientLeft + cont.scrollLeft;
+    const items = Array.from(cont.querySelectorAll<HTMLElement>(".tab")).map((n) => ({
+      id: n.dataset.tabId ?? "",
+      mid: n.offsetLeft + n.offsetWidth / 2,
+    }));
+    const from = items.findIndex((it) => it.id === d.id);
+    const to = dropIndex(items, d.id, pointer);
+    if (to !== from) moveTab(d.id, to);
   };
 
   const endDrag = () => {

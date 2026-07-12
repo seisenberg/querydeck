@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::Emitter;
 
 use crate::error::{AppError, AppResult};
@@ -13,6 +14,11 @@ pub struct DriverPackage {
     pub title: &'static str,
     pub version: &'static str,
     pub url: &'static str,
+    /// Pinned lowercase SHA-256 of the jar at `url`, captured at development
+    /// time from Maven Central. `download` verifies against this before the
+    /// jar is promoted into place, so a tampered/substituted artifact is
+    /// rejected instead of being loaded into the JVM.
+    pub sha256: &'static str,
     pub filename: &'static str,
     #[serde(rename = "driverClass")]
     pub driver_class: &'static str,
@@ -38,6 +44,7 @@ pub struct DriverPackageStatus {
 pub const PACKAGES: &[DriverPackage] = &[
     DriverPackage {
         id: "jdbc-postgresql",
+        sha256: "6e0e4cc2d8cae902084f8a2b18728b073a6fd9d1f87c9d8bff8f298c18185b93",
         title: "PostgreSQL (JDBC)",
         version: "42.7.13",
         url: "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.13/postgresql-42.7.13.jar",
@@ -49,6 +56,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-mysql",
+        sha256: "0353648eaa1c91e0f4020c959abf756bc866ffd583df22ae6b6f6e0cbd43eb44",
         title: "MySQL Connector/J",
         version: "9.7.0",
         url: "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/9.7.0/mysql-connector-j-9.7.0.jar",
@@ -60,6 +68,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-mariadb",
+        sha256: "11e3bb5bbf8ef0e806ae4d6c5d5033fedf7262cc777f0190bde8a2f3c8e6bd8d",
         title: "MariaDB",
         version: "3.5.9",
         url: "https://repo1.maven.org/maven2/org/mariadb/jdbc/mariadb-java-client/3.5.9/mariadb-java-client-3.5.9.jar",
@@ -71,6 +80,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-sqlite",
+        sha256: "dc320e4102884c135ccc30c3c6fc3fb190b750e1586a100e3aba3be783cf33a9",
         title: "SQLite (Xerial JDBC)",
         version: "3.53.2.0",
         url: "https://repo1.maven.org/maven2/org/xerial/sqlite-jdbc/3.53.2.0/sqlite-jdbc-3.53.2.0.jar",
@@ -82,6 +92,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-duckdb",
+        sha256: "6bfca0c795f78bab000de41e848e730011d5c3834592042460d5fe2bd68218fd",
         title: "DuckDB",
         version: "1.5.4.0",
         url: "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.4.0/duckdb_jdbc-1.5.4.0.jar",
@@ -93,6 +104,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-clickhouse",
+        sha256: "9dbe9fd70388b67429be7942f53b7984a4b71fd0f2f727f17339f20e27ecf564",
         title: "ClickHouse (JDBC)",
         version: "0.9.8",
         url: "https://repo1.maven.org/maven2/com/clickhouse/clickhouse-jdbc/0.9.8/clickhouse-jdbc-0.9.8-all.jar",
@@ -104,17 +116,19 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-mssql",
+        sha256: "e36f5237c1267983e5b88dc2169f6b9d7e50eceec6dc1ca31018e3877e14af66",
         title: "Microsoft SQL Server (JDBC)",
         version: "13.4.0.jre11",
         url: "https://repo1.maven.org/maven2/com/microsoft/sqlserver/mssql-jdbc/13.4.0.jre11/mssql-jdbc-13.4.0.jre11.jar",
         filename: "mssql-jdbc-13.4.0.jre11.jar",
         driver_class: "com.microsoft.sqlserver.jdbc.SQLServerDriver",
-        url_template: "jdbc:sqlserver://{host}:{port};databaseName={database};encrypt=true;trustServerCertificate=true",
+        url_template: "jdbc:sqlserver://{host}:{port};databaseName={database};encrypt=true;trustServerCertificate=false",
         default_port: 1433,
-        notes: "Native (TDS) driver is built in; also works for Azure SQL.",
+        notes: "Native (TDS) driver is built in; also works for Azure SQL. TLS is verified by default; for a self-signed server cert set trustServerCertificate=true.",
     },
     DriverPackage {
         id: "jdbc-oracle",
+        sha256: "dbc0ff940bc056d5d9b8f42c0946ded4ebbc08c25cecf6ec1e521b2c8216956b",
         title: "Oracle Database",
         version: "23.26.2.0.0",
         url: "https://repo1.maven.org/maven2/com/oracle/database/jdbc/ojdbc11/23.26.2.0.0/ojdbc11-23.26.2.0.0.jar",
@@ -126,6 +140,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-snowflake",
+        sha256: "5d43d21df0e9b45b3a21c52889aea958177351ecd417bcad594ce7e9f5459082",
         title: "Snowflake",
         version: "4.3.1",
         url: "https://repo1.maven.org/maven2/net/snowflake/snowflake-jdbc/4.3.1/snowflake-jdbc-4.3.1.jar",
@@ -137,6 +152,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-redshift",
+        sha256: "ec684f4096c622083b0efed2e49d20cd5246ed94b98da1e74ddaa8c573ba6e4d",
         title: "Amazon Redshift (JDBC)",
         version: "2.2.7",
         url: "https://repo1.maven.org/maven2/com/amazon/redshift/redshift-jdbc42/2.2.7/redshift-jdbc42-2.2.7.jar",
@@ -148,6 +164,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-databricks",
+        sha256: "16c813a26eab7c461d71b29df3e3163ff0c601f61f9aa69a0e17d14c6c95bbe4",
         title: "Databricks",
         version: "3.4.1",
         url: "https://repo1.maven.org/maven2/com/databricks/databricks-jdbc/3.4.1/databricks-jdbc-3.4.1.jar",
@@ -159,6 +176,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-athena",
+        sha256: "c185aa278ada9a12491fef14499a9d98af5673a0ff9a329d67e3cfea20ecf108",
         title: "Amazon Athena",
         version: "2026.24.1",
         url: "https://repo1.maven.org/maven2/com/amazonaws/athena-jdbc/2026.24.1/athena-jdbc-2026.24.1.jar",
@@ -170,6 +188,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-db2",
+        sha256: "04150111a29370247d162c3f05b8e938bf1314f19a63ad9a5302d88dd478e8e8",
         title: "IBM Db2",
         version: "12.1.5.0",
         url: "https://repo1.maven.org/maven2/com/ibm/db2/jcc/12.1.5.0/jcc-12.1.5.0.jar",
@@ -181,6 +200,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-h2",
+        sha256: "29b70e427cc1c40cdc376283adbb0cc62853073797bb5fe5761f81fe73d57ce0",
         title: "H2",
         version: "2.4.240",
         url: "https://repo1.maven.org/maven2/com/h2database/h2/2.4.240/h2-2.4.240.jar",
@@ -192,6 +212,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-hsqldb",
+        sha256: "5fab2bb4384ac06b762638c8fa2740c944b8d080e4796c0c6c2af8b90dd4e5ad",
         title: "HSQLDB",
         version: "2.7.4",
         url: "https://repo1.maven.org/maven2/org/hsqldb/hsqldb/2.7.4/hsqldb-2.7.4.jar",
@@ -203,6 +224,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-derby",
+        sha256: "2c40eb581e5221ab33c7c796979b49ce404e7e393357c58f7bcdb30a09efca72",
         title: "Apache Derby",
         version: "10.14.2.0",
         url: "https://repo1.maven.org/maven2/org/apache/derby/derby/10.14.2.0/derby-10.14.2.0.jar",
@@ -214,6 +236,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-firebird",
+        sha256: "5aabfa8eac4136970c21edc5539b25227ee921a8d8251c8b4e6024f6adda0af4",
         title: "Firebird (Jaybird)",
         version: "6.0.5",
         url: "https://repo1.maven.org/maven2/org/firebirdsql/jdbc/jaybird/6.0.5/jaybird-6.0.5.jar",
@@ -225,6 +248,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-trino",
+        sha256: "441d8958bef18055d6b1de6f1bc3dae74e6000090a8e7931fe34bd3bb01c815d",
         title: "Trino",
         version: "482",
         url: "https://repo1.maven.org/maven2/io/trino/trino-jdbc/482/trino-jdbc-482.jar",
@@ -236,6 +260,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-presto",
+        sha256: "eb22e8a06bc22974c94d3d08487fbf9e7b46360b391b3e2e554dc69421bccff2",
         title: "Presto",
         version: "0.298.1",
         url: "https://repo1.maven.org/maven2/com/facebook/presto/presto-jdbc/0.298.1/presto-jdbc-0.298.1.jar",
@@ -247,6 +272,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-vertica",
+        sha256: "f43c4ed61a9639d95214e00c888fd21c4ea283d60ca2ce06c6855a774ff5e583",
         title: "Vertica",
         version: "25.3.0-0",
         url: "https://repo1.maven.org/maven2/com/vertica/jdbc/vertica-jdbc/25.3.0-0/vertica-jdbc-25.3.0-0.jar",
@@ -258,6 +284,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-exasol",
+        sha256: "e8982813756ec2715a2bd2089169d08f1138031e7c26de02e62558df1883a459",
         title: "Exasol",
         version: "26.2.8",
         url: "https://repo1.maven.org/maven2/com/exasol/exasol-jdbc/26.2.8/exasol-jdbc-26.2.8.jar",
@@ -269,6 +296,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-teradata",
+        sha256: "4272190ac97083bbcc31117cc940984c05dc2fb0044fb74cdf660952b4760b60",
         title: "Teradata",
         version: "20.00.00.58",
         url: "https://repo1.maven.org/maven2/com/teradata/jdbc/terajdbc/20.00.00.58/terajdbc-20.00.00.58.jar",
@@ -280,6 +308,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-hana",
+        sha256: "d6e17ea4e91e1749e68fa383f0bf1d431c619b1408ab85d522f3617979b12445",
         title: "SAP HANA",
         version: "2.29.7",
         url: "https://repo1.maven.org/maven2/com/sap/cloud/db/jdbc/ngdbc/2.29.7/ngdbc-2.29.7.jar",
@@ -291,6 +320,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-informix",
+        sha256: "6e1e9fea09385e8d99abdc5ba969c4c36e747675945baf525b855882e078848d",
         title: "IBM Informix",
         version: "15.0.1.3",
         url: "https://repo1.maven.org/maven2/com/ibm/informix/jdbc/15.0.1.3/jdbc-15.0.1.3.jar",
@@ -302,6 +332,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-hive",
+        sha256: "c89c6224df9d465ddf96060bc3e289522f1f6e64b01a28e01f94413edeb3d43a",
         title: "Apache Hive / Spark SQL",
         version: "4.2.0",
         url: "https://repo1.maven.org/maven2/org/apache/hive/hive-jdbc/4.2.0/hive-jdbc-4.2.0-standalone.jar",
@@ -313,6 +344,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-mongodb",
+        sha256: "2e51d2d20df07dca35b11c9c87f542fb7382b11a61f1fa7744058e70c57e458e",
         title: "MongoDB (Atlas SQL)",
         version: "3.0.7",
         url: "https://repo1.maven.org/maven2/org/mongodb/mongodb-jdbc/3.0.7/mongodb-jdbc-3.0.7-all.jar",
@@ -324,6 +356,7 @@ pub const PACKAGES: &[DriverPackage] = &[
     },
     DriverPackage {
         id: "jdbc-sybase",
+        sha256: "aac05ebf5504c91b29420129b02dd878a86c52f8fa6eccf9235e0bfd7a60bef1",
         title: "Sybase ASE (jTDS)",
         version: "1.3.1",
         url: "https://repo1.maven.org/maven2/net/sourceforge/jtds/jtds/1.3.1/jtds-1.3.1.jar",
@@ -404,15 +437,54 @@ pub fn download(app: &tauri::AppHandle, id: &str) -> AppResult<String> {
     drop(file);
 
     // Sanity check: jars are zip files.
-    let head = std::fs::read(&tmp)?;
-    if head.len() < 4 || &head[..2] != b"PK" {
+    let bytes = std::fs::read(&tmp)?;
+    if bytes.len() < 4 || &bytes[..2] != b"PK" {
         let _ = std::fs::remove_file(&tmp);
         return Err(AppError::io("downloaded file is not a jar (bad content)"));
     }
+
+    // Integrity: the jar is loaded into a JVM, so verify it byte-for-byte
+    // against the SHA-256 pinned in PACKAGES before promoting it into place.
+    // A CDN glitch, MITM, or substituted artifact fails here instead of
+    // running as trusted code.
+    let digest = hex::encode(Sha256::digest(&bytes));
+    if !digest.eq_ignore_ascii_case(pkg.sha256) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(AppError::io(format!(
+            "checksum mismatch for {}: expected {}, got {} — refusing to install",
+            pkg.filename, pkg.sha256, digest
+        )));
+    }
+
     std::fs::rename(&tmp, &dest)?;
     let _ = app.emit(
         "driver:progress",
         DownloadProgress { id: id.to_string(), done, total: done },
     );
     Ok(dest.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PACKAGES;
+
+    /// Guards the pinned integrity data: every package must carry a
+    /// well-formed lowercase 64-char SHA-256, and ids must be unique. A typo or
+    /// truncated hash would make `download` reject a legitimate jar, so catch
+    /// it at test time rather than in the field.
+    #[test]
+    fn pinned_sha256_is_wellformed_and_ids_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for p in PACKAGES {
+            assert!(seen.insert(p.id), "duplicate package id {}", p.id);
+            assert_eq!(p.sha256.len(), 64, "{}: sha256 must be 64 hex chars", p.id);
+            assert!(
+                p.sha256
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "{}: sha256 must be lowercase hex",
+                p.id
+            );
+        }
+    }
 }

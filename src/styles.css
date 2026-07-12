@@ -1,3 +1,16 @@
+/* Pre-hydration paint: match the OS scheme so launch never flashes the wrong
+ * background. Kept here (not an inline <style> in index.html) so the app's
+ * Content-Security-Policy needs no inline-style hash — the bundled stylesheet
+ * is render-blocking in <head> and loads instantly from local disk. */
+html {
+  background: #1e2129;
+}
+@media (prefers-color-scheme: light) {
+  html {
+    background: #ffffff;
+  }
+}
+
 /* Theme tokens. Dark is the default; light overrides follow the OS setting
  * via prefers-color-scheme. color-scheme also flips NATIVE widgets (select
  * popups, checkboxes, overlay scrollbars, form controls) to match. */
@@ -314,6 +327,9 @@ input[type="radio"] {
   flex: 1;
   overflow: auto;
   padding: 4px 0;
+  /* offsetParent for the drag-reorder hit-test (offsetTop is measured against
+     this box). */
+  position: relative;
 }
 
 /* Connection row being drag-reordered: lifted look, like tab dragging. */
@@ -401,6 +417,9 @@ input[type="radio"] {
   overflow-x: auto;
   flex: 1;
   min-width: 0;
+  /* offsetParent for the drag-reorder hit-test (offsetLeft is measured against
+     this box). */
+  position: relative;
 }
 .tabbar .new-tab {
   flex-shrink: 0;

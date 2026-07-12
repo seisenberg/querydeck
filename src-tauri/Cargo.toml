@@ -32,6 +32,8 @@ rust_decimal = { version = "1.42.1", features = ["db-postgres"] }
 mysql = { version = "28.0.0", default-features = false, features = ["minimal", "rustls-tls"] }
 jni = { version = "0.21", features = ["invocation"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls", "json"] }
+sha2 = "0.10"
+hex = "0.4"
 tokio = { version = "1.52.3", features = ["rt", "net", "time"] }
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls", "chrono"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

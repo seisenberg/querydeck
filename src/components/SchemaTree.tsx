@@ -3,6 +3,7 @@ import { ConnectionProfile, ConsoleFile, DbObject, TableInfo } from "../api";
 import { useStore } from "../store";
 import { ConsoleIcon, DbIcon, Expander, TableIcon, ViewIcon, engineOf } from "./DbIcons";
 import { dragRegionMouseDown } from "./TabBar";
+import { dropIndex } from "../dragorder";
 
 interface CtxMenu {
   x: number;
@@ -70,16 +71,20 @@ export default function SchemaTree() {
         setDraggingProfileId(d.id);
       }
       e.preventDefault();
-      // Target slot: first connection row whose midpoint is below the pointer.
-      const nodes = Array.from(
-        treeRef.current.querySelectorAll<HTMLElement>("[data-profile-id]"),
-      );
-      let to = nodes.findIndex((n) => {
-        const r = n.getBoundingClientRect();
-        return e.clientY < r.top + r.height / 2;
-      });
-      if (to === -1) to = nodes.length - 1;
-      moveProfile(d.id, to);
+      // Target slot from transform-independent layout geometry (offsetTop),
+      // measuring only the *other* rows. getBoundingClientRect would report the
+      // in-flight FLIP transform, so mid-animation reads move the midpoints and
+      // the target oscillates — the flicker. offsetTop is the resting layout
+      // position, immune to transforms; the scroll container is its offsetParent.
+      const cont = treeRef.current;
+      const contRect = cont.getBoundingClientRect();
+      const pointer = e.clientY - contRect.top - cont.clientTop + cont.scrollTop;
+      const items = Array.from(
+        cont.querySelectorAll<HTMLElement>("[data-profile-id]"),
+      ).map((n) => ({ id: n.dataset.profileId ?? "", mid: n.offsetTop + n.offsetHeight / 2 }));
+      const from = items.findIndex((it) => it.id === d.id);
+      const to = dropIndex(items, d.id, pointer);
+      if (to !== from) moveProfile(d.id, to);
     },
     onPointerUp: () => {
       if (dragProf.current?.moved) {
