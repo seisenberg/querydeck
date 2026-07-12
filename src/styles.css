@@ -1109,6 +1109,46 @@ input[type="radio"] {
   background: var(--bg-elevated);
 }
 
+/* editor find/replace panel */
+.qd-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.qd-search input {
+  width: 160px;
+  font-size: 12px;
+  padding: 3px 7px;
+}
+.qd-search button {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.qd-search .qd-toggle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-dim);
+}
+.qd-search .qd-toggle.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+.qd-search .qd-search-spacer {
+  flex: 1;
+}
+.qd-search .qd-search-close {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+}
+.qd-search .qd-search-close:hover {
+  color: var(--text);
+}
+
 /* formatter settings preview */
 .formatter-preview {
   margin: 0;

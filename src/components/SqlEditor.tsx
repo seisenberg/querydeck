@@ -1,10 +1,37 @@
 import { useEffect, useRef } from "react";
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
+import {
+  EditorView,
+  Panel,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+  drawSelection,
+} from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { sql, SQLNamespace, StandardSQL, PostgreSQL, MySQL, SQLite } from "@codemirror/lang-sql";
-import { autocompletion, completionKeymap, closeBrackets } from "@codemirror/autocomplete";
-import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+import {
+  autocompletion,
+  completionKeymap,
+  closeBrackets,
+  acceptCompletion,
+  Completion,
+  CompletionContext,
+  CompletionResult,
+} from "@codemirror/autocomplete";
+import {
+  search,
+  searchKeymap,
+  highlightSelectionMatches,
+  SearchQuery,
+  setSearchQuery,
+  getSearchQuery,
+  findNext,
+  findPrevious,
+  replaceNext,
+  replaceAll,
+  closeSearchPanel,
+} from "@codemirror/search";
 import {
   syntaxHighlighting,
   defaultHighlightStyle,
@@ -16,6 +43,106 @@ import { tags } from "@lezer/highlight";
 import { statementAt } from "../sqlsplit";
 import type { DriverKind } from "../api";
 
+/** Find/replace panel: plain text or regex (.*), case toggle (iI), close
+ * button at the end — replaces CodeMirror's stock checkbox panel. */
+function createSearchPanel(view: EditorView): Panel {
+  const dom = document.createElement("div");
+  dom.className = "qd-search";
+
+  const initial = getSearchQuery(view.state);
+  let caseSensitive = initial.caseSensitive;
+  let regexp = initial.regexp;
+
+  const findField = document.createElement("input");
+  findField.placeholder = "Find";
+  findField.value = initial.search;
+  findField.setAttribute("main-field", "true");
+  const replaceField = document.createElement("input");
+  replaceField.placeholder = "Replace";
+  replaceField.value = initial.replace;
+
+  const commit = () => {
+    const query = new SearchQuery({
+      search: findField.value,
+      replace: replaceField.value,
+      caseSensitive,
+      regexp,
+    });
+    if (!query.eq(getSearchQuery(view.state))) {
+      view.dispatch({ effects: setSearchQuery.of(query) });
+    }
+  };
+  findField.oninput = commit;
+  replaceField.oninput = commit;
+
+  const button = (label: string, title: string, cls: string, onClick: () => void) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.title = title;
+    b.className = cls;
+    b.onclick = onClick;
+    return b;
+  };
+
+  const caseBtn = button("iI", "Ignore case", "qd-toggle", () => {
+    caseSensitive = !caseSensitive;
+    caseBtn.classList.toggle("active", !caseSensitive);
+    caseBtn.title = caseSensitive ? "Match case" : "Ignore case";
+    commit();
+  });
+  caseBtn.classList.toggle("active", !caseSensitive);
+  const regexBtn = button(".*", "Regular expression", "qd-toggle", () => {
+    regexp = !regexp;
+    regexBtn.classList.toggle("active", regexp);
+    commit();
+  });
+  regexBtn.classList.toggle("active", regexp);
+
+  dom.onkeydown = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSearchPanel(view);
+      view.focus();
+    } else if (e.key === "Enter" && e.target === findField) {
+      e.preventDefault();
+      if (e.shiftKey) findPrevious(view);
+      else findNext(view);
+    } else if (e.key === "Enter" && e.target === replaceField) {
+      e.preventDefault();
+      replaceNext(view);
+    }
+  };
+
+  dom.append(
+    findField,
+    caseBtn,
+    regexBtn,
+    button("↑", "Previous match (⇧⏎)", "", () => void findPrevious(view)),
+    button("↓", "Next match (⏎)", "", () => void findNext(view)),
+    replaceField,
+    button("Replace", "Replace current match", "", () => void replaceNext(view)),
+    button("All", "Replace all matches", "", () => void replaceAll(view)),
+  );
+  const spacer = document.createElement("span");
+  spacer.className = "qd-search-spacer";
+  dom.append(
+    spacer,
+    button("✕", "Close search (Esc)", "qd-search-close", () => {
+      closeSearchPanel(view);
+      view.focus();
+    }),
+  );
+
+  return {
+    dom,
+    top: true,
+    mount() {
+      findField.focus();
+      findField.select();
+    },
+  };
+}
+
 interface Props {
   initialSql: string;
   /** Bumped by the store when it rewrites the SQL (e.g. Reformat Query);
@@ -23,6 +150,8 @@ interface Props {
   sqlEpoch?: number;
   driver: DriverKind | null;
   schema: SQLNamespace | undefined;
+  /** Extra completions mined from this connection's query history. */
+  historyCompletions?: Completion[];
   /** Editor pane height as a fraction of the console split. */
   heightPct?: number;
   onChange: (sql: string) => void;
@@ -98,6 +227,7 @@ export default function SqlEditor({
   sqlEpoch,
   driver,
   schema,
+  historyCompletions,
   heightPct,
   onChange,
   onRunStatement,
@@ -108,8 +238,26 @@ export default function SqlEditor({
   const langCompartment = useRef(new Compartment());
   const themeCompartment = useRef(new Compartment());
   // Keep latest callbacks without recreating the editor.
-  const cbRef = useRef({ onChange, onRunStatement, onRunAll });
-  cbRef.current = { onChange, onRunStatement, onRunAll };
+  const cbRef = useRef({ onChange, onRunStatement, onRunAll, historyCompletions });
+  cbRef.current = { onChange, onRunStatement, onRunAll, historyCompletions };
+
+  // Completions mined from the connection's query history; a stable source
+  // reading through cbRef so the editor never needs reconfiguring for it.
+  const historySource = useRef((ctx: CompletionContext): CompletionResult | null => {
+    const options = cbRef.current.historyCompletions ?? [];
+    if (!options.length) return null;
+    const word = ctx.matchBefore(/[\w.]+$/);
+    if (!word || (word.from === word.to && !ctx.explicit)) return null;
+    return { from: word.from, options, validFor: /^[\w.]*$/ };
+  }).current;
+
+  const langExtensions = (drv: DriverKind | null, ns: SQLNamespace | undefined) => {
+    const dialect = sqlDialect(drv);
+    return [
+      sql({ dialect, schema: ns, upperCaseKeywords: true }),
+      dialect.language.data.of({ autocomplete: historySource }),
+    ];
+  };
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -137,10 +285,15 @@ export default function SqlEditor({
         autocompletion(),
         highlightActiveLine(),
         highlightSelectionMatches(),
+        search({ createPanel: createSearchPanel, top: true }),
         themeCompartment.current.of(
           themeFor(window.matchMedia("(prefers-color-scheme: dark)").matches),
         ),
         keymap.of([
+          // Both must run before the default Enter/Tab bindings; they return
+          // false when no completion is active, so typing is unaffected.
+          { key: "Enter", run: acceptCompletion },
+          { key: "Tab", run: acceptCompletion },
           {
             key: "Mod-Enter",
             run: runAtCursor,
@@ -158,9 +311,7 @@ export default function SqlEditor({
           ...searchKeymap,
           ...completionKeymap,
         ]),
-        langCompartment.current.of(
-          sql({ dialect: sqlDialect(driver), schema, upperCaseKeywords: true }),
-        ),
+        langCompartment.current.of(langExtensions(driver, schema)),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) cbRef.current.onChange(u.state.doc.toString());
         }),
@@ -202,10 +353,9 @@ export default function SqlEditor({
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: langCompartment.current.reconfigure(
-        sql({ dialect: sqlDialect(driver), schema, upperCaseKeywords: true }),
-      ),
+      effects: langCompartment.current.reconfigure(langExtensions(driver, schema)),
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [driver, schema]);
 
   return (

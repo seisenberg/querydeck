@@ -1,6 +1,8 @@
-import { memo, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { SQLNamespace } from "@codemirror/lang-sql";
+import type { Completion } from "@codemirror/autocomplete";
 import { splitStatements } from "../sqlsplit";
+import { HistoryEntry, api } from "../api";
 import { LogEntry, ROW_LIMITS, TabState, limitLabel, useStore } from "../store";
 import SqlEditor from "./SqlEditor";
 import ResultsGrid from "./ResultsGrid";
@@ -62,6 +64,28 @@ function QueryTab({ tab }: Props) {
   const onSplitPointerUp = () => {
     splitRect.current = null;
   };
+
+  // Completions mined from this connection's query history: recent whole
+  // statements plus their identifier vocabulary. Refreshed after each run
+  // (tab.log.length changes when a query finishes).
+  const [historyCompletions, setHistoryCompletions] = useState<Completion[]>([]);
+  const profileId = profile?.id ?? null;
+  useEffect(() => {
+    if (!profileId) {
+      setHistoryCompletions([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .historyList(400, undefined, profileId)
+      .then((entries) => {
+        if (!cancelled) setHistoryCompletions(buildHistoryCompletions(entries));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId, tab.log.length]);
 
   const schemaNs: SQLNamespace | undefined = useMemo(() => {
     if (!catalog) return undefined;
@@ -151,6 +175,7 @@ function QueryTab({ tab }: Props) {
           sqlEpoch={tab.sqlEpoch}
           driver={profile?.driver ?? null}
           schema={schemaNs}
+          historyCompletions={historyCompletions}
           heightPct={editorFrac}
           onChange={(sql) => setTabSql(tab.id, sql)}
           onRunStatement={(sql) => void runQuery(tab.id, sql)}
@@ -315,6 +340,51 @@ function LogPane({ entries }: { entries: LogEntry[] }) {
       ))}
     </div>
   );
+}
+
+/** Keywords the SQL language already completes — no point duplicating. */
+const COMMON_KEYWORDS = new Set(
+  (
+    "select from where and or not null insert into values update set delete create table view " +
+    "index drop alter add join left right inner outer full on group by order limit offset having " +
+    "distinct union all as case when then else end between like ilike exists in is asc desc with " +
+    "primary key foreign references default unique constraint cascade begin commit rollback"
+  ).split(" "),
+);
+
+/** Turn recent history into completions: whole statements + identifier words. */
+function buildHistoryCompletions(entries: HistoryEntry[]): Completion[] {
+  const out: Completion[] = [];
+  const seenStmt = new Set<string>();
+  const words = new Map<string, string>(); // lowercase -> original spelling
+
+  for (const e of entries) {
+    if (e.kind === "error") continue;
+    const flat = e.sql.replace(/\s+/g, " ").trim();
+    const key = flat.toLowerCase();
+    if (flat.length > 10 && !seenStmt.has(key) && seenStmt.size < 30) {
+      seenStmt.add(key);
+      out.push({
+        label: flat.length > 60 ? flat.slice(0, 60) + "…" : flat,
+        apply: e.sql,
+        type: "text",
+        detail: "history",
+        boost: 1,
+      });
+    }
+    for (const m of flat.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+      const w = m[0];
+      const lower = w.toLowerCase();
+      if (w.length >= 3 && !COMMON_KEYWORDS.has(lower) && !words.has(lower)) {
+        words.set(lower, w);
+      }
+      if (words.size >= 500) break;
+    }
+  }
+  for (const w of words.values()) {
+    out.push({ label: w, type: "text", detail: "history", boost: -1 });
+  }
+  return out;
 }
 
 /** Full text of the i-th statement in the tab's script (for export). */
