@@ -174,6 +174,9 @@ interface Store {
 
   addTab(profileId?: string | null, sql?: string, autorun?: boolean): string;
   closeTab(id: string): void;
+  /** After deleting a connection: drop its open consoles and cached state
+   * (no console files are written — the backend already erased them). */
+  purgeProfileState(profileId: string): void;
   moveTab(id: string, toIndex: number): void;
   /** "+" / ⌘T: always opens the Open Console picker modal (new or saved). */
   newConsoleRequested(): void;
@@ -575,6 +578,35 @@ export const useStore = create<Store>((set, get) => {
           : s.activeTabId;
       set({ tabs, activeTabId });
       void get().refreshSessions();
+      schedulePersist(get);
+    },
+
+    purgeProfileState(profileId) {
+      const s = get();
+      for (const t of s.tabs.filter((t) => t.profileId === profileId)) {
+        const ids = t.results
+          .map((r) => r.resultId)
+          .filter((r): r is number => r != null);
+        if (ids.length) void api.resultsFree(ids);
+      }
+      set((st) => {
+        const tabs = st.tabs.filter((t) => t.profileId !== profileId);
+        const activeTabId = tabs.some((t) => t.id === st.activeTabId)
+          ? st.activeTabId
+          : (tabs[tabs.length - 1]?.id ?? null);
+        const drop = <T,>(m: Record<string, T>) => {
+          const { [profileId]: _gone, ...rest } = m;
+          return rest;
+        };
+        return {
+          tabs,
+          activeTabId,
+          catalogs: drop(st.catalogs),
+          objectsByProfile: drop(st.objectsByProfile),
+          databasesByProfile: drop(st.databasesByProfile),
+          closedConsoles: drop(st.closedConsoles),
+        };
+      });
       schedulePersist(get);
     },
 

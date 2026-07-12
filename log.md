@@ -68,3 +68,15 @@ lint, ClickHouse play endpoint, startup/shutdown timing).
   heals staleness once per run. Entry JS chunk kept at 944K (parser +
   dictionary lazy-load). Conclusion: startup ~1.1–1.5s cold, shutdown
   instant; no further hot spots found.
+
+## Session 2026-07-12 — polish round
+- Deleting a connection now closes its open consoles and purges its cached
+  state (new purgeProfileState store action; no console files re-written).
+- Collapsed-rail line fixed for real: the culprit was the sidebar's
+  border-right — at 34px wide it ran vertically behind the traffic-light
+  buttons; removed when collapsed.
+- Statusbar: activity dot lost its words ("N running" moved into tooltip),
+  now sits directly left of the ODBC/Java driver check; "no connection"
+  placeholder text removed (connection name still shows when one is active).
+- All three verified in the browser preview (delete closes tab, rail clean,
+  statusbar layout).

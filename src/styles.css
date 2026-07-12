@@ -243,10 +243,13 @@ input[type="radio"] {
   flex-shrink: 0;
 }
 
-/* Collapsed: a thin rail that only hosts the re-expand button. */
+/* Collapsed: a thin rail that only hosts the re-expand button. No right
+ * border — at 34px wide that vertical line ran straight behind the macOS
+ * traffic-light buttons overlaying the top of the rail. */
 .sidebar.sidebar-rail {
   width: 34px;
   min-width: 34px;
+  border-right: none;
 }
 .sidebar-rail .rail-top {
   height: var(--topbar-h);

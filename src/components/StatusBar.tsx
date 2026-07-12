@@ -1,6 +1,7 @@
 import { useStore } from "../store";
 
-/** Application work state for the statusbar icon. */
+/** Application work state: just the colored dot (no words) — the count and
+ * details live in its tooltip and the activity modal. */
 function ActivityIcon() {
   const activity = useStore((s) => s.activity);
   const setActivityModal = useStore((s) => s.setActivityModal);
@@ -8,14 +9,15 @@ function ActivityIcon() {
   const hasQuery = activity.some((a) => a.kind === "query");
   const hasBg = activity.some((a) => a.kind === "background");
   const state = hasQuery && hasBg ? "both" : hasQuery ? "query" : hasBg ? "bg" : "idle";
+  const n = activity.length;
   const title =
     state === "idle"
       ? "Idle — click for background activity"
       : state === "query"
-        ? "Running your queries — click for details"
+        ? `Running ${n} quer${n === 1 ? "y" : "ies"} — click for details`
         : state === "bg"
-          ? "Background work (schema loads, jobs) — click for details"
-          : "Queries + background work — click for details";
+          ? `${n} background job${n === 1 ? "" : "s"} (schema loads, imports/exports) — click for details`
+          : `${n} running (queries + background work) — click for details`;
 
   return (
     <button
@@ -46,7 +48,6 @@ function ActivityIcon() {
           <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeOpacity="0.25" />
         )}
       </svg>
-      {activity.length > 0 ? ` ${activity.length} running` : ""}
     </button>
   );
 }
@@ -64,8 +65,7 @@ export default function StatusBar() {
 
   return (
     <div className="statusbar">
-      <ActivityIcon />
-      <span>{prof ? `${prof.name} (${prof.driver})` : "no connection"}</span>
+      {prof && <span>{`${prof.name} (${prof.driver})`}</span>}
       {tab?.running && <span>running…</span>}
       {active && active.kind === "rows" && (
         <span>
@@ -79,6 +79,7 @@ export default function StatusBar() {
         </span>
       )}
       <span className="spring" />
+      <ActivityIcon />
       {env && (
         <button className="ghost small" onClick={() => setDriversModal(true)}>
           ODBC {env.odbcAvailable ? "✓" : "—"} · Java {env.jvmAvailable ? "✓" : "—"} · Drivers

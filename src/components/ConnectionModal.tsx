@@ -172,6 +172,8 @@ export default function ConnectionModal() {
     setBusy(true);
     try {
       await api.profileDelete(editing.id);
+      // Its consoles are gone with it — close any that are open.
+      useStore.getState().purgeProfileState(editing.id);
       await loadProfiles();
       await loadClosedConsoles();
       closeConnectionModal();
