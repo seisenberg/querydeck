@@ -34,8 +34,10 @@ API stance).
   connectors' cancel endpoint) so the warehouse stops.
 - `ErrorKind::Cancelled` + `Error::is_cancelled()`.
 - Tests green (399 lib tests), fmt + clippy clean.
-- **Caveat:** abort-request verified only against a mock; needs one live-account check. Owner (Sam) is
-  forking + opening the upstream PR.
+- **Live-verified** against a real Snowflake account (external-browser SSO): a cancelled
+  `SYSTEM$WAIT(120)` returns `is_cancelled()` in ~3s and shows stopped server-side in `QUERY_HISTORY`
+  (`FAILED_WITH_ERROR`, error 604 "SQL execution canceled"). Harness: `~/Documents/snowflake-cancel-test`.
+  Owner (Sam) is forking + opening the upstream PR.
 
 **How QueryDeck will use it (in B):** each tab's `SnowflakeConn` keeps the token for its in-flight
 query; `query_cancel` command calls `token.cancel()`. Implement `DbConnection::server_cancel` to return
