@@ -4,6 +4,7 @@ import {
   ClickhouseParams,
   ConnectionProfile,
   DriverKind,
+  DriverLatest,
   DriverPackage,
   DuckdbParams,
   JdbcParams,
@@ -20,6 +21,7 @@ import {
   uid,
 } from "../api";
 import { useStore } from "../store";
+import { compareVersions, matchJar } from "../driverstale";
 
 const DRIVER_LABELS: Record<DriverKind, string> = {
   sqlite: "SQLite",
@@ -167,6 +169,8 @@ export default function ConnectionModal() {
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [latestByPkg, setLatestByPkg] = useState<Record<string, DriverLatest>>({});
+  const [updatingJar, setUpdatingJar] = useState<number | null>(null);
 
   useEffect(() => {
     api.tunnelsList().then(setTunnels).catch(() => undefined);
@@ -180,6 +184,48 @@ export default function ConnectionModal() {
       api.driversRegistry().then(setJdbcPresets).catch(() => undefined);
     }
   }, [driver, odbcInv, jdbcPresets.length]);
+
+  // Advisory staleness data for the jar list (disk-cached daily sweep of
+  // Maven Central; resolves to the catalog pins when offline).
+  useEffect(() => {
+    if (driver !== "jdbc") return;
+    let alive = true;
+    api
+      .driversCheckLatest()
+      .then((l) => {
+        if (alive) setLatestByPkg(Object.fromEntries(l.map((x) => [x.id, x])));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [driver]);
+
+  /** Per-connection, user-initiated: fetch the latest jar for this package
+   * (if not already on disk) and repoint THIS jar entry at it. Other
+   * connections — including ones deliberately kept on old drivers — are
+   * never touched. */
+  const upgradeJar = async (index: number, pkgId: string, version: string) => {
+    setUpdatingJar(index);
+    try {
+      const info = latestByPkg[pkgId];
+      const path =
+        info?.downloaded && info.path
+          ? info.path
+          : await api.driverDownloadVersion(pkgId, version);
+      // Functional update: jars may have been edited while the download ran.
+      setParams((prev) => {
+        const jars = [...(prev as JdbcParams).jars];
+        jars[index] = path;
+        return { ...prev, jars } as ConnectionProfile["params"];
+      });
+      showToast(`Driver updated to ${version}`);
+    } catch (e) {
+      showToast(`Driver update failed: ${errMessage(e)}`);
+    } finally {
+      setUpdatingJar(null);
+    }
+  };
 
   const profile = useMemo<ConnectionProfile>(
     () => ({
@@ -606,27 +652,57 @@ export default function ConnectionModal() {
                 />
                 <label>Driver jars</label>
                 <div>
-                  {(p as JdbcParams).jars.map((j, i) => (
-                    <div key={i} className="form-row-inline" style={{ marginBottom: 4 }}>
-                      <span
-                        className="hint"
-                        style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}
-                        title={j}
-                      >
-                        {j}
-                      </span>
-                      <button
-                        className="small ghost danger"
-                        onClick={() =>
-                          set({
-                            jars: (p as JdbcParams).jars.filter((_, k) => k !== i),
-                          } as never)
-                        }
-                      >
-                        remove
-                      </button>
-                    </div>
-                  ))}
+                  {(p as JdbcParams).jars.map((j, i) => {
+                    // Advisory staleness: flag jars we can identify as an
+                    // older release of a catalog package. Unrecognized jars
+                    // are left alone — running old drivers on purpose (old
+                    // servers need them) is a supported setup, so this never
+                    // blocks or nags beyond the badge.
+                    const match = matchJar(jdbcPresets, j);
+                    const latest = match
+                      ? (latestByPkg[match.pkg.id]?.latest ?? match.pkg.version)
+                      : "";
+                    const stale = match !== null && compareVersions(match.version, latest) < 0;
+                    return (
+                      <div key={i} className="form-row-inline" style={{ marginBottom: 4 }}>
+                        <span
+                          className="hint"
+                          style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}
+                          title={j}
+                        >
+                          {j}
+                        </span>
+                        {stale && match && (
+                          <>
+                            <span
+                              className="hint stale-driver"
+                              title={`This jar is ${match.pkg.title} ${match.version}; ${latest} is available. Connections on older drivers keep working — update only if you want the newer driver.`}
+                            >
+                              ⚠ {match.version} → {latest}
+                            </span>
+                            <button
+                              className="small"
+                              disabled={updatingJar !== null}
+                              onClick={() => void upgradeJar(i, match.pkg.id, latest)}
+                              title={`Download ${latest} if needed and point this connection at it`}
+                            >
+                              {updatingJar === i ? "Updating…" : "Update"}
+                            </button>
+                          </>
+                        )}
+                        <button
+                          className="small ghost danger"
+                          onClick={() =>
+                            set({
+                              jars: (p as JdbcParams).jars.filter((_, k) => k !== i),
+                            } as never)
+                          }
+                        >
+                          remove
+                        </button>
+                      </div>
+                    );
+                  })}
                   <div className="form-row-inline">
                     <button onClick={() => void pickJars()}>Add jar…</button>
                     <button

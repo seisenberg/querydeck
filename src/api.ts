@@ -264,6 +264,15 @@ export interface DriverPackage {
   path: string | null;
 }
 
+/** Newest eligible release of a driver package on Maven Central (advisory;
+ * equals the catalog pin when offline). */
+export interface DriverLatest {
+  id: string;
+  latest: string;
+  downloaded: boolean;
+  path: string | null;
+}
+
 export interface HistoryEntry {
   ts: string;
   profileId: string;
@@ -375,6 +384,10 @@ export const api = {
 
   driversRegistry: () => invoke<DriverPackage[]>("drivers_registry"),
   driverDownload: (id: string) => invoke<string>("driver_download", { id }),
+  driversCheckLatest: (force = false) =>
+    invoke<DriverLatest[]>("drivers_check_latest", { force }),
+  driverDownloadVersion: (id: string, version: string) =>
+    invoke<string>("driver_download_version", { id, version }),
   envStatus: () => invoke<EnvStatus>("env_status"),
 
   historyList: (limit?: number, filter?: string, profileId?: string) =>

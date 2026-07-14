@@ -1046,6 +1046,24 @@ async fn driver_download(app: tauri::AppHandle, id: String) -> AppResult<String>
         .map_err(|e| AppError::internal(e.to_string()))?
 }
 
+#[tauri::command]
+async fn driver_download_version(
+    app: tauri::AppHandle,
+    id: String,
+    version: String,
+) -> AppResult<String> {
+    tauri::async_runtime::spawn_blocking(move || registry::download_version(&app, &id, &version))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+async fn drivers_check_latest(force: bool) -> AppResult<Vec<registry::DriverLatest>> {
+    tauri::async_runtime::spawn_blocking(move || registry::check_latest(force))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
 #[derive(Serialize)]
 struct EnvStatus {
     #[serde(rename = "odbcAvailable")]
@@ -1208,6 +1226,8 @@ pub fn run() {
             job_cancel,
             drivers_registry,
             driver_download,
+            driver_download_version,
+            drivers_check_latest,
             env_status,
             history_list,
             history_clear,

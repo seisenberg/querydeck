@@ -394,6 +394,14 @@ input[type="radio"] {
   line-height: 1.6;
 }
 
+/* Advisory "newer driver available" badge on jar rows in the connection
+ * editor. Warning-toned but deliberately quiet: old drivers are a supported
+ * choice, not an error. */
+.stale-driver {
+  color: var(--warn);
+  white-space: nowrap;
+}
+
 /* ------------------------------------------------------------- main ------ */
 .main {
   flex: 1;

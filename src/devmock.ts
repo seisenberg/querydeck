@@ -40,17 +40,24 @@ if (!w.__TAURI_INTERNALS__) {
     ssl_mode: "prefer",
     accept_invalid_certs: false,
   });
-  const jdbc = (cls: string, url: string) => ({
+  const jdbc = (
+    cls: string,
+    url: string,
+    // Default is deliberately unmatchable by the staleness detector; the
+    // snowflake profile overrides with an old catalog-shaped jar so the
+    // "newer driver available" badge is exercisable in the preview.
+    jar = "/Users/demo/Library/Application Support/QueryDeck/drivers/driver.jar",
+  ) => ({
     url,
     driver_class: cls,
-    jars: ["/Users/demo/Library/Application Support/QueryDeck/drivers/driver.jar"],
+    jars: [jar],
     user: "svc_analytics",
     password: "__keychain__",
   });
   const profiles: any[] = [
     { id: "demo-pg", name: "orders@prod", driver: "postgres", params: server("db.prod.internal", 5432, "app", "orders") },
     { id: "demo-redshift", name: "warehouse", driver: "redshift", params: server("analytics.xyz.us-east-1.redshift.amazonaws.com", 5439, "awsuser", "dev") },
-    { id: "demo-snowflake", name: "SNOWFLAKE_ANALYTICS", driver: "jdbc", params: jdbc("net.snowflake.client.jdbc.SnowflakeDriver", "jdbc:snowflake://acme-prod.snowflakecomputing.com/?db=ANALYTICS") },
+    { id: "demo-snowflake", name: "SNOWFLAKE_ANALYTICS", driver: "jdbc", params: jdbc("net.snowflake.client.jdbc.SnowflakeDriver", "jdbc:snowflake://acme-prod.snowflakecomputing.com/?db=ANALYTICS", "/Users/demo/Library/Application Support/QueryDeck/drivers/jdbc-snowflake-4.1.0.jar") },
     { id: "demo-ch", name: "events@clickhouse", driver: "clickhouse", params: { host: "ch.internal", port: 8123, user: "default", password: "", database: "events", use_https: false, accept_invalid_certs: false } },
     { id: "demo-databricks", name: "lakehouse", driver: "jdbc", params: jdbc("com.databricks.client.jdbc.Driver", "jdbc:databricks://dbc-123.cloud.databricks.com:443") },
     { id: "demo-mssql", name: "crm", driver: "mssql", params: { ...server("sql01.corp", 1433, "sa", "CRM"), encrypt: true } },
@@ -377,6 +384,13 @@ ORDER BY month DESC, revenue DESC;`;
       pkg("jdbc-athena", "Amazon Athena", "2026.24.1", "com.amazonaws.athena.jdbc.AthenaDriver", "jdbc:athena://Region={region};", 443, "AWS credential chain.", false),
     ],
     driver_download: () => "",
+    // Snowflake reports a newer release than the mock profile's 4.1.0 jar so
+    // the stale-jar badge and Update button are exercisable in the preview.
+    drivers_check_latest: () => [
+      { id: "jdbc-snowflake", latest: "4.6.2", downloaded: false, path: null },
+    ],
+    driver_download_version: (a) =>
+      `/Users/demo/Library/Application Support/QueryDeck/drivers/${a.id}-${a.version}.jar`,
     drivers_dir: () => "/tmp",
     odbc_inventory: () => ({ drivers: [], dsns: [] }),
     tunnels_list: () => [],

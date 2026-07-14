@@ -396,17 +396,71 @@ struct DownloadProgress {
 }
 
 pub fn download(app: &tauri::AppHandle, id: &str) -> AppResult<String> {
-    let pkg = PACKAGES
+    let pkg = find_package(id)?;
+    fetch_verified(app, id, pkg.url, pkg.filename, pkg.sha256)
+}
+
+/// Download a specific (possibly newer-than-pinned) version of a package.
+///
+/// The pinned version verifies against the compiled-in SHA-256. Other
+/// versions verify against the `.sha256` checksum Maven Central publishes
+/// beside every artifact — same origin as the jar, so this is a corruption /
+/// truncation check rather than a defense against a compromised repository,
+/// which is the intended scope for user-initiated upgrades.
+pub fn download_version(app: &tauri::AppHandle, id: &str, version: &str) -> AppResult<String> {
+    let pkg = find_package(id)?;
+    if version == pkg.version {
+        return download(app, id);
+    }
+    let parts = maven_parts(pkg)
+        .ok_or_else(|| AppError::config(format!("cannot derive Maven coordinates for {id}")))?;
+    if !version_eligible(pkg.version, version) {
+        return Err(AppError::config(format!(
+            "refusing unexpected version {version} for {id}"
+        )));
+    }
+    let url = parts.jar_url(version);
+    let sha = http_client()?
+        .get(format!("{url}.sha256"))
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.text())
+        .map_err(|e| AppError::io(format!("checksum fetch failed: {e}")))?;
+    // Checksum files are "<hex>" or "<hex>  <filename>".
+    let sha = sha.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(AppError::io(format!("no usable checksum published for {url}")));
+    }
+    fetch_verified(app, id, &url, &parts.jar_filename(version), &sha)
+}
+
+fn find_package(id: &str) -> AppResult<&'static DriverPackage> {
+    PACKAGES
         .iter()
         .find(|p| p.id == id)
-        .ok_or_else(|| AppError::config(format!("unknown driver package {id}")))?;
+        .ok_or_else(|| AppError::config(format!("unknown driver package {id}")))
+}
 
+fn http_client() -> AppResult<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| AppError::io(format!("http client: {e}")))
+}
+
+fn fetch_verified(
+    app: &tauri::AppHandle,
+    id: &str,
+    url: &str,
+    filename: &str,
+    expected_sha: &str,
+) -> AppResult<String> {
     let dir = AppState::drivers_dir();
     std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(pkg.filename);
-    let tmp = dir.join(format!("{}.part", pkg.filename));
+    let dest = dir.join(filename);
+    let tmp = dir.join(format!("{filename}.part"));
 
-    let mut resp = reqwest::blocking::get(pkg.url)
+    let mut resp = reqwest::blocking::get(url)
         .map_err(|e| AppError::io(format!("download failed: {e}")))?
         .error_for_status()
         .map_err(|e| AppError::io(format!("download failed: {e}")))?;
@@ -444,15 +498,15 @@ pub fn download(app: &tauri::AppHandle, id: &str) -> AppResult<String> {
     }
 
     // Integrity: the jar is loaded into a JVM, so verify it byte-for-byte
-    // against the SHA-256 pinned in PACKAGES before promoting it into place.
-    // A CDN glitch, MITM, or substituted artifact fails here instead of
-    // running as trusted code.
+    // against the expected SHA-256 (compiled-in pin for the catalog version,
+    // Maven's published checksum for user-requested upgrades) before
+    // promoting it into place. A CDN glitch, truncation, or substituted
+    // artifact fails here instead of running as trusted code.
     let digest = hex::encode(Sha256::digest(&bytes));
-    if !digest.eq_ignore_ascii_case(pkg.sha256) {
+    if !digest.eq_ignore_ascii_case(expected_sha) {
         let _ = std::fs::remove_file(&tmp);
         return Err(AppError::io(format!(
-            "checksum mismatch for {}: expected {}, got {} — refusing to install",
-            pkg.filename, pkg.sha256, digest
+            "checksum mismatch for {filename}: expected {expected_sha}, got {digest} — refusing to install"
         )));
     }
 
@@ -464,9 +518,259 @@ pub fn download(app: &tauri::AppHandle, id: &str) -> AppResult<String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
+// ------------------------------------------------------------ freshness --
+//
+// Staleness is advisory only: connections keep whatever jar they point at
+// (some servers need old drivers), and upgrading is a per-connection button
+// in the editor. The catalog pins stay the offline baseline; Maven Central's
+// maven-metadata.xml supplies "newest available" at runtime, cached on disk
+// so the check is at most one network sweep per day.
+
+/// Maven coordinates derived from a package's pinned repo1 URL, which always
+/// has the shape `<artifact_dir>/<version>/<artifact>-<version><suffix>`.
+/// The on-disk filename may use a different prefix than the artifact (e.g.
+/// Informix's artifact is just "jdbc", stored as "informix-jdbc-…"), so local
+/// and remote naming are derived separately.
+struct MavenParts {
+    artifact_dir: String,
+    artifact: String,
+    /// Filename tail after the version: ".jar", or classifier forms like
+    /// "-all.jar" (ClickHouse) and "-standalone.jar" (Hive).
+    suffix: String,
+    /// Local drivers-dir filename prefix up to the version.
+    local_prefix: String,
+}
+
+impl MavenParts {
+    fn jar_filename(&self, version: &str) -> String {
+        format!("{}{}{}", self.local_prefix, version, self.suffix)
+    }
+    fn jar_url(&self, version: &str) -> String {
+        format!(
+            "{}/{}/{}-{}{}",
+            self.artifact_dir, version, self.artifact, version, self.suffix
+        )
+    }
+}
+
+fn maven_parts(pkg: &DriverPackage) -> Option<MavenParts> {
+    let (rest, file) = pkg.url.rsplit_once('/')?;
+    let (artifact_dir, version) = rest.rsplit_once('/')?;
+    if version != pkg.version {
+        return None;
+    }
+    let artifact = artifact_dir.rsplit_once('/')?.1;
+    let suffix = file.strip_prefix(&format!("{artifact}-{version}"))?;
+    let vi = pkg.filename.find(pkg.version)?;
+    if &pkg.filename[vi + pkg.version.len()..] != suffix {
+        return None;
+    }
+    Some(MavenParts {
+        artifact_dir: artifact_dir.to_string(),
+        artifact: artifact.to_string(),
+        suffix: suffix.to_string(),
+        local_prefix: pkg.filename[..vi].to_string(),
+    })
+}
+
+/// Split off a ".jreNN" tail (MSSQL publishes the jre8 and jre11 lines as
+/// separate versions); comparisons stay within the pinned family.
+fn split_jre(v: &str) -> (&str, &str) {
+    match v.find(".jre") {
+        Some(i) => v.split_at(i),
+        None => (v, ""),
+    }
+}
+
+fn is_plain_numeric(v: &str) -> bool {
+    !v.is_empty()
+        && v.split(['.', '-'])
+            .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A candidate qualifies when it is in the same ".jre" family as the pinned
+/// version and is otherwise plain numeric — which wholesale-rejects
+/// prerelease tags (rc/beta/alpha/M1/SNAPSHOT/…) without a word list.
+fn version_eligible(pinned: &str, candidate: &str) -> bool {
+    let (_, pin_fam) = split_jre(pinned);
+    let (cand_base, cand_fam) = split_jre(candidate);
+    cand_fam == pin_fam && is_plain_numeric(cand_base)
+}
+
+/// Numeric segment-wise order ("42.7.2" < "42.10.0"); absent segments are 0.
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let segs = |v: &str| -> Vec<u64> {
+        split_jre(v)
+            .0
+            .split(['.', '-'])
+            .map(|s| s.parse().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (segs(a), segs(b));
+    let n = a.len().max(b.len());
+    (0..n)
+        .map(|i| {
+            a.get(i)
+                .copied()
+                .unwrap_or(0)
+                .cmp(&b.get(i).copied().unwrap_or(0))
+        })
+        .find(|o| *o != std::cmp::Ordering::Equal)
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// All published versions of an artifact, scraped from maven-metadata.xml.
+/// A ~40-line string scan beats an XML dependency for this fixed format.
+fn fetch_versions(parts: &MavenParts) -> AppResult<Vec<String>> {
+    let xml = http_client()?
+        .get(format!("{}/maven-metadata.xml", parts.artifact_dir))
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.text())
+        .map_err(|e| AppError::io(format!("metadata fetch failed: {e}")))?;
+    let mut out = Vec::new();
+    let mut rest = xml.as_str();
+    while let Some(i) = rest.find("<version>") {
+        rest = &rest[i + "<version>".len()..];
+        let Some(j) = rest.find("</version>") else { break };
+        out.push(rest[..j].trim().to_string());
+        rest = &rest[j..];
+    }
+    Ok(out)
+}
+
+/// What the connection editor needs to flag a stale jar and offer an upgrade.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DriverLatest {
+    pub id: String,
+    /// Newest eligible release on Maven Central (never older than the pin;
+    /// falls back to the pin when offline or the metadata fetch fails).
+    pub latest: String,
+    /// Whether the jar for `latest` is already in the drivers dir.
+    pub downloaded: bool,
+    pub path: Option<String>,
+}
+
+#[derive(serde::Deserialize, Serialize, Default)]
+struct LatestCache {
+    checked_at: u64,
+    versions: std::collections::HashMap<String, String>,
+}
+
+const LATEST_TTL_SECS: u64 = 24 * 60 * 60;
+
+fn latest_cache_path() -> std::path::PathBuf {
+    AppState::drivers_dir().join("latest-versions.json")
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub fn check_latest(force: bool) -> Vec<DriverLatest> {
+    let mut cache: LatestCache = std::fs::read(latest_cache_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let fresh = !cache.versions.is_empty()
+        && now_secs().saturating_sub(cache.checked_at) < LATEST_TTL_SECS;
+    if force || !fresh {
+        // One thread per package; a failed or offline fetch simply leaves
+        // that package at its pinned version (no staleness signal, no error).
+        let results: Vec<(&str, Option<String>)> = std::thread::scope(|s| {
+            let handles: Vec<_> = PACKAGES
+                .iter()
+                .map(|p| {
+                    s.spawn(move || {
+                        let latest = maven_parts(p).and_then(|parts| {
+                            fetch_versions(&parts)
+                                .ok()?
+                                .into_iter()
+                                .filter(|v| version_eligible(p.version, v))
+                                .chain(std::iter::once(p.version.to_string()))
+                                .max_by(|a, b| version_cmp(a, b))
+                        });
+                        (p.id, latest)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|h| h.join().ok())
+                .collect()
+        });
+        cache.versions = results
+            .into_iter()
+            .filter_map(|(id, v)| Some((id.to_string(), v?)))
+            .collect();
+        cache.checked_at = now_secs();
+        let _ = std::fs::create_dir_all(AppState::drivers_dir());
+        if let Ok(json) = serde_json::to_vec_pretty(&cache) {
+            let _ = std::fs::write(latest_cache_path(), json);
+        }
+    }
+
+    let dir = AppState::drivers_dir();
+    PACKAGES
+        .iter()
+        .map(|p| {
+            let latest = cache
+                .versions
+                .get(p.id)
+                .cloned()
+                .unwrap_or_else(|| p.version.to_string());
+            let filename = maven_parts(p)
+                .map(|parts| parts.jar_filename(&latest))
+                .unwrap_or_else(|| p.filename.to_string());
+            let path = dir.join(&filename);
+            let downloaded = path.exists();
+            DriverLatest {
+                id: p.id.to_string(),
+                latest,
+                downloaded,
+                path: downloaded.then(|| path.to_string_lossy().into_owned()),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::PACKAGES;
+    use super::{maven_parts, version_cmp, version_eligible, PACKAGES};
+    use std::cmp::Ordering;
+
+    /// Every package URL must decompose into Maven coordinates that
+    /// round-trip to the pinned filename and URL — the upgrade path builds
+    /// newer-version URLs from exactly this derivation.
+    #[test]
+    fn maven_parts_roundtrip_for_all_packages() {
+        for p in PACKAGES {
+            let parts = maven_parts(p).unwrap_or_else(|| panic!("{}: underivable", p.id));
+            assert_eq!(parts.jar_filename(p.version), p.filename, "{}", p.id);
+            assert_eq!(parts.jar_url(p.version), p.url, "{}", p.id);
+        }
+    }
+
+    #[test]
+    fn version_ordering_and_eligibility() {
+        assert_eq!(version_cmp("42.7.2", "42.10.0"), Ordering::Less);
+        assert_eq!(version_cmp("482", "479"), Ordering::Greater);
+        assert_eq!(version_cmp("25.3.0-0", "25.3.0-1"), Ordering::Less);
+        assert_eq!(version_cmp("13.4.0.jre11", "13.4.1.jre11"), Ordering::Less);
+
+        // Prereleases and cross-family versions never qualify.
+        assert!(version_eligible("42.7.13", "42.8.0"));
+        assert!(!version_eligible("42.7.13", "42.8.0-rc1"));
+        assert!(!version_eligible("42.7.13", "42.8.0.beta2"));
+        assert!(version_eligible("13.4.0.jre11", "13.6.0.jre11"));
+        assert!(!version_eligible("13.4.0.jre11", "13.6.0.jre8"));
+        assert!(!version_eligible("13.4.0.jre11", "13.6.0"));
+        assert!(!version_eligible("1.3.1", "1.3.2.jre11"));
+    }
 
     /// Guards the pinned integrity data: every package must carry a
     /// well-formed lowercase 64-char SHA-256, and ids must be unique. A typo or
