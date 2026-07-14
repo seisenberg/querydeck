@@ -972,7 +972,12 @@ export const useStore = create<Store>((set, get) => {
         });
         set((st) => ({
           tabs: st.tabs.map((t) =>
-            t.id === tab.id ? { ...t, sql: formatted, sqlEpoch: t.sqlEpoch + 1 } : t,
+            // Guard against clobbering: formatSql awaits a lazy import (a
+            // chunk download on first use), and the user may have typed in
+            // the meantime. Only apply if the sql is still what we formatted.
+            t.id === tab.id && t.sql === tab.sql
+              ? { ...t, sql: formatted, sqlEpoch: t.sqlEpoch + 1 }
+              : t,
           ),
         }));
         schedulePersist(get);
