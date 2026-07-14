@@ -267,7 +267,11 @@ input[type="radio"] {
 .sidebar-rail .rail-top {
   height: var(--topbar-h);
   flex-shrink: 0;
-  /* No border here: it drew a stray line right behind the expand button. */
+  /* Continue the tab strip's bottom border across the rail so the separator
+   * reaches the left window edge (the rail is `--topbar-h` tall, matching the
+   * tab bar). A border-right here would run behind the traffic lights, but this
+   * bottom edge sits below them. */
+  border-bottom: 1px solid var(--border);
 }
 .sidebar-rail .rail-expand {
   margin: 8px auto 0;
