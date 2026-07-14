@@ -332,13 +332,15 @@ input[type="radio"] {
   position: relative;
 }
 
-/* Connection row being drag-reordered: lifted look, like tab dragging. */
+/* Connection row being drag-reordered: lifted look, carried by the pointer
+ * (inline transform from useDragReorder) over the parting rows. */
 .tree-node.dragging-profile {
   background: var(--bg-elevated);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
   position: relative;
   z-index: 2;
   touch-action: none;
+  will-change: transform;
 }
 
 .tree-node {
@@ -442,13 +444,15 @@ input[type="radio"] {
   color: var(--text);
   box-shadow: inset 0 2px 0 var(--accent);
 }
-/* Lifted look while dragging so the motion reads as "picked up". */
+/* Lifted look while dragging: carried by the pointer (inline transform from
+ * useDragReorder) so the gap it will drop into stays visible. */
 .tabbar .tab.dragging {
   opacity: 0.92;
   background: var(--bg-elevated);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
   position: relative;
   z-index: 2;
+  will-change: transform;
 }
 .tabbar .tab .close {
   border: none;

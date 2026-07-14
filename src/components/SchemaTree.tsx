@@ -1,9 +1,9 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { ConnectionProfile, ConsoleFile, DbObject, TableInfo } from "../api";
 import { useStore } from "../store";
 import { ConsoleIcon, DbIcon, Expander, TableIcon, ViewIcon, engineOf } from "./DbIcons";
 import { dragRegionMouseDown } from "./TabBar";
-import { dropIndex } from "../dragorder";
+import { useDragReorder } from "../useDragReorder";
 
 interface CtxMenu {
   x: number;
@@ -30,70 +30,24 @@ export default function SchemaTree() {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
 
   const treeRef = useRef<HTMLDivElement>(null);
-  const dragProf = useRef<{ id: string; startY: number; moved: boolean } | null>(null);
   const suppressClick = useRef(false);
-  const [draggingProfileId, setDraggingProfileId] = useState<string | null>(null);
-  const profPositions = useRef<Map<string, number>>(new Map());
-
-  // FLIP: displaced connection rows slide to their new slot on reorder.
-  useLayoutEffect(() => {
-    const prev = profPositions.current;
-    const next = new Map<string, number>();
-    const nodes = treeRef.current?.querySelectorAll<HTMLElement>("[data-profile-id]") ?? [];
-    nodes.forEach((n) => {
-      const id = n.dataset.profileId;
-      if (!id) return;
-      next.set(id, n.offsetTop);
-      const old = prev.get(id);
-      if (old != null && old !== n.offsetTop && id !== dragProf.current?.id) {
-        n.animate(
-          [{ transform: `translateY(${old - n.offsetTop}px)` }, { transform: "translateY(0)" }],
-          { duration: 140, easing: "ease-out" },
-        );
-      }
-    });
-    profPositions.current = next;
+  const reorder = useDragReorder({
+    axis: "y",
+    containerRef: treeRef,
+    itemSelector: "[data-profile-id]",
+    idKey: "profileId",
+    onMove: moveProfile,
+    onDrop: () => {
+      suppressClick.current = true;
+      persistProfileOrder();
+    },
   });
 
   const profileDrag: ProfileDrag = {
-    draggingId: draggingProfileId,
-    onPointerDown: (id) => (e) => {
-      if (e.button !== 0) return;
-      dragProf.current = { id, startY: e.clientY, moved: false };
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    },
-    onPointerMove: (e) => {
-      const d = dragProf.current;
-      if (!d || !(e.buttons & 1) || !treeRef.current) return;
-      if (!d.moved && Math.abs(e.clientY - d.startY) < 5) return;
-      if (!d.moved) {
-        d.moved = true;
-        setDraggingProfileId(d.id);
-      }
-      e.preventDefault();
-      // Target slot from transform-independent layout geometry (offsetTop),
-      // measuring only the *other* rows. getBoundingClientRect would report the
-      // in-flight FLIP transform, so mid-animation reads move the midpoints and
-      // the target oscillates — the flicker. offsetTop is the resting layout
-      // position, immune to transforms; the scroll container is its offsetParent.
-      const cont = treeRef.current;
-      const contRect = cont.getBoundingClientRect();
-      const pointer = e.clientY - contRect.top - cont.clientTop + cont.scrollTop;
-      const items = Array.from(
-        cont.querySelectorAll<HTMLElement>("[data-profile-id]"),
-      ).map((n) => ({ id: n.dataset.profileId ?? "", mid: n.offsetTop + n.offsetHeight / 2 }));
-      const from = items.findIndex((it) => it.id === d.id);
-      const to = dropIndex(items, d.id, pointer);
-      if (to !== from) moveProfile(d.id, to);
-    },
-    onPointerUp: () => {
-      if (dragProf.current?.moved) {
-        suppressClick.current = true;
-        persistProfileOrder();
-      }
-      dragProf.current = null;
-      setDraggingProfileId(null);
-    },
+    draggingId: reorder.draggingId,
+    onPointerDown: reorder.onPointerDown,
+    onPointerMove: reorder.onPointerMove,
+    onPointerUp: reorder.onPointerEnd,
     consumeClickSuppression: () => {
       const s = suppressClick.current;
       suppressClick.current = false;
