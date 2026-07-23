@@ -16,7 +16,8 @@ macOS, Windows, Linux.
   words, find/replace with regex and case toggles, and one-keystroke reformatting
   (`⌘⌥L`, configurable style).
 - **Results built for volume** — virtualized grid over a backend row store, paged
-  fetches, automatic row limits, cancellable queries (server-side on PostgreSQL).
+  fetches, automatic row limits, cancellable queries (server-side on PostgreSQL,
+  Trino and Snowflake — a cancelled warehouse query stops billing).
 - **Schema tree that's instant** — catalogs cache to disk and render immediately on
   launch, then refresh in the background; functions, procedures, sequences, triggers
   and more group under schema → kind, collapsed until you ask.
@@ -32,12 +33,15 @@ macOS, Windows, Linux.
 | --- | --- | --- |
 | **JDBC** | JNI bridge, JVM discovered at runtime — anything with a JDBC driver | Java 11+ (e.g. [Temurin](https://adoptium.net)) |
 | **ODBC** | thin binding loaded at runtime — anything with an ODBC driver | Windows: built in · macOS: `brew install unixodbc` · Debian: `apt install unixodbc` |
-| Native | SQLite · DuckDB · PostgreSQL · Amazon Redshift · MySQL · MariaDB · SQL Server · ClickHouse · Trino — pure-Rust drivers, zero setup | none |
+| Native | SQLite · DuckDB · PostgreSQL · Amazon Redshift · MySQL · MariaDB · SQL Server · ClickHouse · Trino · Snowflake — pure-Rust drivers, zero setup | none |
+
+The native Snowflake driver speaks the REST API directly (no JVM) and covers all four
+auth methods: password + MFA, key-pair (JWT), external-browser SSO, and OAuth tokens.
 
 The driver manager downloads the latest official JDBC driver for **27 engines** from
-Maven Central with one click — Snowflake, Databricks, Oracle, Db2, Teradata, Vertica,
-Exasol, SAP HANA, Athena, Hive/Spark, Presto, Informix, Firebird, and more — and the
-JDBC connection form prefills any of them from a preset dropdown.
+Maven Central with one click — Databricks, Oracle, Db2, Teradata, Vertica, Exasol,
+SAP HANA, Athena, Hive/Spark, Presto, Informix, Firebird, and more — and the JDBC
+connection form prefills any of them from a preset dropdown.
 
 <p>
   <img src="docs/screenshot-connection.png" width="49%" alt="New connection dialog" />
@@ -68,7 +72,7 @@ src/                    React UI (tabs, editor, grid, tree, wizards)
   store.ts              zustand app state · api.ts — typed invoke wrappers
   components/           SqlEditor (CodeMirror 6), ResultsGrid (virtualized), …
 src-tauri/src/
-  drivers/              DbConnection trait + sqlite/duckdb/postgres/mysql/mssql/clickhouse/trino/odbc/jdbc
+  drivers/              DbConnection trait + sqlite/duckdb/postgres/mysql/mssql/clickhouse/trino/snowflake/odbc/jdbc
   state.rs              sessions (one per profile+tab), result store, cancel flags
   catalog.rs, ddl.rs    introspection model + DDL generation
   objects.rs            functions/procedures/sequences/triggers per dialect

@@ -30,7 +30,7 @@ console.log("wrote docs/screenshot-main.png");
 await page.click(".sidebar-header .actions button[title='New connection']");
 await page.waitForSelector(".modal");
 // Show a native analytics engine's form (JDBC/ODBC lead the picker).
-await page.click(".driver-picker button:has-text('Trino')");
+await page.click(".driver-picker button:has-text('Snowflake')");
 await page.waitForTimeout(400);
 const modal = page.locator(".modal");
 await modal.screenshot({ path: "docs/screenshot-connection.png" });
