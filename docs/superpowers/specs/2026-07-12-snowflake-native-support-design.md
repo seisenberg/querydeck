@@ -1,6 +1,10 @@
 # Native Snowflake support — design & decisions (2026-07-12)
 
-Status: **A implemented** (upstream crate branch). **B and C designed, deferred.**
+Status: **A merged upstream** — estie-inc/snowflake-connector-rs shipped its own cancellation API in
+v1.1.0 (PR #206: `Session::query_handle` → `QueryHandle`/`QueryCanceller`, `ErrorKind::Cancelled`),
+superseding our fork branch; QueryDeck depends on the crates.io release, no git dep needed.
+**B implemented 2026-07-23** (`drivers/snowflake.rs`, all four auth methods; live verification
+against a real account still pending). **C deferred.**
 
 Goal: add a *native* Snowflake driver to QueryDeck (like postgres/mysql/mssql/clickhouse/trino),
 so Snowflake works without the JDBC/JVM path. Snowflake has no simple wire protocol — it's an

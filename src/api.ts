@@ -12,6 +12,7 @@ export type DriverKind =
   | "mssql"
   | "clickhouse"
   | "trino"
+  | "snowflake"
   | "odbc"
   | "jdbc";
 
@@ -68,6 +69,28 @@ export interface ClickhouseParams {
   use_https: boolean;
   accept_invalid_certs: boolean;
 }
+export type SnowflakeAuthMethod = "password" | "keypair" | "external_browser" | "oauth";
+
+export interface SnowflakeParams {
+  /** Account identifier, e.g. "myorg-myaccount". */
+  account: string;
+  user: string;
+  auth_method: SnowflakeAuthMethod;
+  password: string;
+  /** One-time TOTP passcode (password+MFA); never persisted. */
+  passcode: string;
+  /** Path to the PKCS#8 private-key PEM file (keypair auth). */
+  private_key_path: string;
+  /** Passphrase when the private key is encrypted. */
+  passphrase: string;
+  /** OAuth / programmatic access token. */
+  token: string;
+  warehouse: string;
+  database: string;
+  schema: string;
+  role: string;
+}
+
 export interface OdbcParams {
   connection_string: string;
 }
@@ -87,6 +110,7 @@ export type DriverParams =
   | MssqlParams
   | ClickhouseParams
   | TrinoParams
+  | SnowflakeParams
   | OdbcParams
   | JdbcParams;
 

@@ -2,7 +2,7 @@ use serde::Serialize;
 
 /// A single cell value, normalized for display/transfer.
 /// Serializes untagged: null / bool / number / string.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum DbValue {
     Null,

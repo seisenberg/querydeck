@@ -108,6 +108,8 @@ function formatterLanguage(driver: string | undefined): string {
       return "clickhouse";
     case "trino":
       return "trino";
+    case "snowflake":
+      return "snowflake";
     default:
       return "sql";
   }

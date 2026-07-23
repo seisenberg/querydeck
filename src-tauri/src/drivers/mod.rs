@@ -4,6 +4,7 @@ pub mod postgres;
 pub mod mysql;
 pub mod mssql;
 pub mod clickhouse;
+pub mod snowflake;
 pub mod trino;
 pub mod odbc;
 pub mod jdbc;
@@ -41,6 +42,14 @@ impl ConnectionProfile {
             DriverParams::Clickhouse(p) => Some(&mut p.password),
             DriverParams::Trino(p) => Some(&mut p.password),
             DriverParams::Jdbc(p) => Some(&mut p.password),
+            // The active auth method's secret goes to the keychain; the
+            // private-key PEM stays on disk and is referenced by path.
+            DriverParams::Snowflake(p) => match p.auth_method.as_str() {
+                "password" => Some(&mut p.password),
+                "keypair" => Some(&mut p.passphrase),
+                "oauth" => Some(&mut p.token),
+                _ => None, // external_browser holds no secret
+            },
             DriverParams::Sqlite(_) | DriverParams::Duckdb(_) | DriverParams::Odbc(_) => None,
         }
     }
@@ -62,6 +71,7 @@ impl ConnectionProfile {
                     DriverParams::Mssql(ms) => ms.database = db.to_string(),
                     DriverParams::Clickhouse(ch) => ch.database = db.to_string(),
                     DriverParams::Trino(t) => t.catalog = db.to_string(),
+                    DriverParams::Snowflake(sf) => sf.database = db.to_string(),
                     _ => {}
                 }
             }
@@ -87,8 +97,50 @@ pub enum DriverParams {
     Clickhouse(ClickhouseParams),
     /// Trino over its HTTP REST protocol (also fits most Presto forks).
     Trino(TrinoParams),
+    /// Snowflake over its HTTP REST API (snowflake-connector-rs; no JVM).
+    Snowflake(SnowflakeParams),
     Odbc(OdbcParams),
     Jdbc(JdbcParams),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnowflakeParams {
+    /// Account identifier, e.g. "myorg-myaccount".
+    pub account: String,
+    pub user: String,
+    /// "password" | "keypair" | "external_browser" | "oauth"
+    #[serde(default = "default_snowflake_auth")]
+    pub auth_method: String,
+    #[serde(default)]
+    pub password: String,
+    /// One-time TOTP passcode for password+MFA. Never persisted (it expires
+    /// in seconds) — usable for Test connection; saved profiles rely on push
+    /// MFA, key-pair, or a token for hands-off reconnects.
+    #[serde(default, skip_serializing)]
+    pub passcode: String,
+    /// Path to the PKCS#8 private-key PEM file (keypair auth). Stays on
+    /// disk by path like SSH-tunnel keys; a key rotation is a file swap.
+    #[serde(default)]
+    pub private_key_path: String,
+    /// Passphrase when the private key PEM is encrypted (keychain-stored).
+    #[serde(default)]
+    pub passphrase: String,
+    /// OAuth / programmatic access token (keychain-stored).
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub warehouse: String,
+    /// Database to introspect/query (the per-tab switcher swaps it).
+    #[serde(default)]
+    pub database: String,
+    #[serde(default)]
+    pub schema: String,
+    #[serde(default)]
+    pub role: String,
+}
+
+fn default_snowflake_auth() -> String {
+    "password".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +272,7 @@ pub enum Dialect {
     Mysql,
     Mssql,
     Clickhouse,
+    Snowflake,
     Generic,
 }
 
@@ -233,8 +286,9 @@ impl Dialect {
 
     pub fn escape_str(&self, s: &str) -> String {
         match self {
-            // MySQL and ClickHouse treat backslash as an escape character.
-            Dialect::Mysql | Dialect::Clickhouse => {
+            // MySQL, ClickHouse and Snowflake treat backslash as an escape
+            // character in string literals.
+            Dialect::Mysql | Dialect::Clickhouse | Dialect::Snowflake => {
                 s.replace('\\', "\\\\").replace('\'', "''")
             }
             _ => s.replace('\'', "''"),
@@ -362,6 +416,7 @@ pub fn connect(profile: &ConnectionProfile) -> AppResult<Box<dyn DbConnection>> 
         DriverParams::Mssql(p) => Ok(Box::new(mssql::MssqlConn::open(p)?)),
         DriverParams::Clickhouse(p) => Ok(Box::new(clickhouse::ClickhouseConn::open(p)?)),
         DriverParams::Trino(p) => Ok(Box::new(trino::TrinoConn::open(p)?)),
+        DriverParams::Snowflake(p) => Ok(Box::new(snowflake::SnowflakeConn::open(p)?)),
         DriverParams::Odbc(p) => Ok(Box::new(odbc::OdbcConn::open(p)?)),
         DriverParams::Jdbc(p) => Ok(Box::new(jdbc::JdbcConn::open(p)?)),
     }

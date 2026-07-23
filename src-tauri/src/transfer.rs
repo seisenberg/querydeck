@@ -287,7 +287,10 @@ pub fn import_run(
         .collect();
     let insert_head = format!("INSERT INTO {target} ({}) VALUES ", col_list.join(", "));
 
-    let txn = matches!(dialect, Dialect::Sqlite | Dialect::Postgres | Dialect::Mysql);
+    let txn = matches!(
+        dialect,
+        Dialect::Sqlite | Dialect::Postgres | Dialect::Mysql | Dialect::Snowflake
+    );
     if txn {
         exec_simple(conn, "BEGIN")?;
     }

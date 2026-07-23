@@ -232,6 +232,58 @@ pub fn list(conn: &mut dyn DbConnection) -> AppResult<Vec<DbObject>> {
                 });
             }
         }
+        Dialect::Snowflake => {
+            // information_schema here is per-database; without a database on
+            // the connection these fail and degrade to an empty list.
+            for r in query_ok(
+                conn,
+                "SELECT function_schema, function_name, argument_signature \
+                 FROM information_schema.functions ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "function".into(),
+                    detail: Some(text(&r[2])),
+                });
+            }
+            for r in query_ok(
+                conn,
+                "SELECT procedure_schema, procedure_name, argument_signature \
+                 FROM information_schema.procedures ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "procedure".into(),
+                    detail: Some(text(&r[2])),
+                });
+            }
+            for r in query_ok(
+                conn,
+                "SELECT sequence_schema, sequence_name \
+                 FROM information_schema.sequences ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "sequence".into(),
+                    detail: None,
+                });
+            }
+            for r in query_ok(
+                conn,
+                "SELECT stage_schema, stage_name, stage_type \
+                 FROM information_schema.stages ORDER BY 1, 2",
+            ) {
+                out.push(DbObject {
+                    schema: Some(text(&r[0])),
+                    name: text(&r[1]),
+                    kind: "stage".into(),
+                    detail: Some(text(&r[2])),
+                });
+            }
+        }
         Dialect::Generic => {
             // Best effort: engines reachable over ODBC/JDBC that expose an
             // ANSI information_schema (Postgres, MySQL, SQL Server, …).
@@ -403,6 +455,34 @@ pub fn ddl(
         .and_then(|r| {
             let t = text(&r[0]);
             (!t.is_empty()).then_some(t)
+        }),
+        (Dialect::Snowflake, "function") => query(
+            conn,
+            &format!(
+                "SELECT function_definition FROM information_schema.functions \
+                 WHERE function_schema = {} AND function_name = {}",
+                lit(d, schema),
+                lit(d, name)
+            ),
+        )?
+        .first()
+        .and_then(|r| {
+            let t = text(&r[0]);
+            (!t.is_empty()).then(|| format!("-- function body (information_schema)\n{t}"))
+        }),
+        (Dialect::Snowflake, "procedure") => query(
+            conn,
+            &format!(
+                "SELECT procedure_definition FROM information_schema.procedures \
+                 WHERE procedure_schema = {} AND procedure_name = {}",
+                lit(d, schema),
+                lit(d, name)
+            ),
+        )?
+        .first()
+        .and_then(|r| {
+            let t = text(&r[0]);
+            (!t.is_empty()).then(|| format!("-- procedure body (information_schema)\n{t}"))
         }),
         (Dialect::Generic, "function" | "procedure") => query(
             conn,

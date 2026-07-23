@@ -44,6 +44,8 @@ export function engineOf(profile: ConnectionProfile): EngineKind {
       return "clickhouse";
     case "trino":
       return "trino";
+    case "snowflake":
+      return "snowflake";
     case "odbc":
       return "odbc";
     case "jdbc": {

@@ -13,6 +13,8 @@ import {
   OdbcInventory,
   OdbcParams,
   PostgresParams,
+  SnowflakeAuthMethod,
+  SnowflakeParams,
   SqliteParams,
   TrinoParams,
   TunnelConfig,
@@ -33,6 +35,7 @@ const DRIVER_LABELS: Record<DriverKind, string> = {
   mssql: "SQL Server",
   clickhouse: "ClickHouse",
   trino: "Trino",
+  snowflake: "Snowflake",
   odbc: "ODBC",
   jdbc: "JDBC",
 };
@@ -49,6 +52,7 @@ const PICKER_ORDER: DriverKind[] = [
   "mysql",
   "postgres",
   "redshift",
+  "snowflake",
   "mssql", // "SQL Server"
   "sqlite",
   "trino",
@@ -122,6 +126,21 @@ function defaultParams(kind: DriverKind): ConnectionProfile["params"] {
         use_https: false,
         accept_invalid_certs: false,
       } as ClickhouseParams;
+    case "snowflake":
+      return {
+        account: "",
+        user: "",
+        auth_method: "password",
+        password: "",
+        passcode: "",
+        private_key_path: "",
+        passphrase: "",
+        token: "",
+        warehouse: "",
+        database: "",
+        schema: "",
+        role: "",
+      } as SnowflakeParams;
     case "odbc":
       return { connection_string: "Driver={};Server=;Database=;" } as OdbcParams;
     case "jdbc":
@@ -240,7 +259,9 @@ export default function ConnectionModal() {
               ? "jdbc"
               : driver === "trino"
                 ? `${(params as TrinoParams).catalog || "trino"}@${(params as TrinoParams).host}`
-                : `${(params as PostgresParams).database ?? ""}@${(params as PostgresParams).host ?? ""}`),
+                : driver === "snowflake"
+                  ? `${(params as SnowflakeParams).database || "snowflake"}@${(params as SnowflakeParams).account}`
+                  : `${(params as PostgresParams).database ?? ""}@${(params as PostgresParams).host ?? ""}`),
       driver,
       params,
       sshTunnel: sshTunnel || null,
@@ -450,6 +471,135 @@ export default function ConnectionModal() {
                     />{" "}
                     trust self-signed certs
                   </label>
+                </div>
+              </>
+            )}
+
+            {driver === "snowflake" && (
+              <>
+                <label>Account</label>
+                <input
+                  value={(p as SnowflakeParams).account}
+                  onChange={(e) => set({ account: e.target.value } as never)}
+                  placeholder="myorg-myaccount"
+                />
+                <label>User</label>
+                <input
+                  value={(p as SnowflakeParams).user}
+                  onChange={(e) => set({ user: e.target.value } as never)}
+                />
+                <label>Auth</label>
+                <select
+                  value={(p as SnowflakeParams).auth_method}
+                  onChange={(e) =>
+                    set({ auth_method: e.target.value as SnowflakeAuthMethod } as never)
+                  }
+                >
+                  <option value="password">Password (+ MFA)</option>
+                  <option value="keypair">Key pair (JWT)</option>
+                  <option value="external_browser">External browser SSO</option>
+                  <option value="oauth">OAuth / access token</option>
+                </select>
+                {(p as SnowflakeParams).auth_method === "password" && (
+                  <>
+                    <label>Password</label>
+                    <input
+                      type="password"
+                      value={(p as SnowflakeParams).password}
+                      onChange={(e) => set({ password: e.target.value } as never)}
+                    />
+                    <label>MFA passcode</label>
+                    <input
+                      value={(p as SnowflakeParams).passcode}
+                      onChange={(e) => set({ passcode: e.target.value } as never)}
+                      placeholder="one-time TOTP — empty for push MFA (never saved)"
+                    />
+                  </>
+                )}
+                {(p as SnowflakeParams).auth_method === "keypair" && (
+                  <>
+                    <label>Private key</label>
+                    <div className="form-row-inline">
+                      <input
+                        style={{ flex: 1 }}
+                        value={(p as SnowflakeParams).private_key_path}
+                        onChange={(e) => set({ private_key_path: e.target.value } as never)}
+                        placeholder="/path/to/rsa_key.p8"
+                      />
+                      <button
+                        onClick={() =>
+                          void openDialog({
+                            multiple: false,
+                            title: "Choose private key PEM",
+                          }).then((f) => {
+                            if (typeof f === "string") set({ private_key_path: f } as never);
+                          })
+                        }
+                      >
+                        Browse…
+                      </button>
+                    </div>
+                    <label>Passphrase</label>
+                    <input
+                      type="password"
+                      value={(p as SnowflakeParams).passphrase}
+                      onChange={(e) => set({ passphrase: e.target.value } as never)}
+                      placeholder="(only if the key is encrypted)"
+                    />
+                  </>
+                )}
+                {(p as SnowflakeParams).auth_method === "external_browser" && (
+                  <>
+                    <label />
+                    <span className="hint">
+                      Connecting opens your browser to sign in (experimental). The login
+                      is re-prompted after a restart or idle timeout — use key-pair or a
+                      token for hands-off reconnects.
+                    </span>
+                  </>
+                )}
+                {(p as SnowflakeParams).auth_method === "oauth" && (
+                  <>
+                    <label>Token</label>
+                    <input
+                      type="password"
+                      value={(p as SnowflakeParams).token}
+                      onChange={(e) => set({ token: e.target.value } as never)}
+                      placeholder="OAuth access token or programmatic access token"
+                    />
+                  </>
+                )}
+                <label>Warehouse</label>
+                <div className="form-row-inline">
+                  <input
+                    style={{ flex: 1 }}
+                    value={(p as SnowflakeParams).warehouse}
+                    onChange={(e) => set({ warehouse: e.target.value } as never)}
+                    placeholder="(optional)"
+                  />
+                  <label>Role</label>
+                  <input
+                    style={{ width: 140 }}
+                    value={(p as SnowflakeParams).role}
+                    onChange={(e) => set({ role: e.target.value } as never)}
+                    placeholder="(optional)"
+                  />
+                </div>
+                <label>Database</label>
+                <div className="form-row-inline">
+                  <input
+                    style={{ flex: 1 }}
+                    value={(p as SnowflakeParams).database}
+                    onChange={(e) => set({ database: e.target.value } as never)}
+                    placeholder="(optional — switchable per console)"
+                  />
+                  <label>Schema</label>
+                  <input
+                    style={{ width: 140 }}
+                    value={(p as SnowflakeParams).schema}
+                    onChange={(e) => set({ schema: e.target.value } as never)}
+                    placeholder="(optional)"
+                  />
                 </div>
               </>
             )}
