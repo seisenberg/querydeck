@@ -16,8 +16,7 @@ macOS, Windows, Linux.
   words, find/replace with regex and case toggles, and one-keystroke reformatting
   (`⌘⌥L`, configurable style).
 - **Results built for volume** — virtualized grid over a backend row store, paged
-  fetches, automatic row limits, cancellable queries (server-side on PostgreSQL,
-  Trino and Snowflake — a cancelled warehouse query stops billing).
+  fetches, automatic row limits, cancellable queries.
 - **Schema tree that's instant** — catalogs cache to disk and render immediately on
   launch, then refresh in the background; functions, procedures, sequences, triggers
   and more group under schema → kind, collapsed until you ask.
@@ -35,8 +34,6 @@ macOS, Windows, Linux.
 | **ODBC** | thin binding loaded at runtime — anything with an ODBC driver | Windows: built in · macOS: `brew install unixodbc` · Debian: `apt install unixodbc` |
 | Native | SQLite · DuckDB · PostgreSQL · Amazon Redshift · MySQL · MariaDB · SQL Server · ClickHouse · Trino · Snowflake — pure-Rust drivers, zero setup | none |
 
-The native Snowflake driver speaks the REST API directly (no JVM) and covers all four
-auth methods: password + MFA, key-pair (JWT), external-browser SSO, and OAuth tokens.
 
 The driver manager downloads the latest official JDBC driver for **27 engines** from
 Maven Central with one click — Databricks, Oracle, Db2, Teradata, Vertica, Exasol,
