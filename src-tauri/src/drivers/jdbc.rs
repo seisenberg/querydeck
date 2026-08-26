@@ -11,8 +11,9 @@ use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::sync::atomic::AtomicBool;
 
-use jni::objects::{GlobalRef, JObject, JObjectArray, JString, JValue};
-use jni::{AttachGuard, InitArgsBuilder, JNIVersion, JavaVM};
+use jni::objects::{JObject, JObjectArray, JString, JValue};
+use jni::refs::Global;
+use jni::{jni_sig, jni_str, Env, InitArgsBuilder, JNIVersion, JavaVM};
 use once_cell::sync::OnceCell;
 
 use crate::catalog::{Catalog, ColumnInfo, SchemaInfo, TableInfo};
@@ -26,7 +27,7 @@ static JVM: OnceCell<Result<JavaVM, String>> = OnceCell::new();
 fn jvm() -> AppResult<&'static JavaVM> {
     JVM.get_or_init(|| {
         let args = InitArgsBuilder::new()
-            .version(JNIVersion::V8)
+            .version(JNIVersion::V1_8)
             .option("-Djava.awt.headless=true")
             .option("-Xrs")
             .build()
@@ -95,61 +96,90 @@ pub fn status() -> (bool, String) {
 }
 
 /// Turn a pending Java exception (or plain JNI error) into an AppError.
-fn jerr(env: &mut AttachGuard<'_>, e: jni::errors::Error, context: &str) -> AppError {
-    if let jni::errors::Error::JavaException = e {
-        if let Ok(ex) = env.exception_occurred() {
-            let _ = env.exception_clear();
-            if !ex.is_null() {
-                if let Ok(msg) = env.call_method(&ex, "toString", "()Ljava/lang/String;", &[]) {
-                    if let Ok(obj) = msg.l() {
-                        if let Ok(s) = env.get_string(&JString::from(obj)) {
-                            let s: String = s.into();
+/// The thread-attachment APIs catch pending exceptions themselves and report
+/// them as `CaughtJavaException`, carrying the throwable with them.
+fn jerr(env: &mut Env<'_>, e: jni::errors::Error, context: &str) -> AppError {
+    match &e {
+        // Already caught and cleared for us, with the Java-side class and
+        // message decoded — same text `Throwable.toString()` would produce.
+        jni::errors::Error::CaughtJavaException { name, msg, .. } => {
+            AppError::query(if msg.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}: {msg}")
+            })
+        }
+        // Still pending: raised inside a frame we own, so read it ourselves.
+        jni::errors::Error::JavaException => {
+            let pending = env.exception_occurred();
+            env.exception_clear();
+            if let Some(ex) = pending {
+                if let Ok(obj) = env
+                    .call_method(&ex, jni_str!("toString"), jni_sig!("()Ljava/lang/String;"), &[])
+                    .and_then(|v| v.l())
+                {
+                    if let Ok(js) = env.cast_local::<JString>(obj) {
+                        if let Ok(s) = js.try_to_string(env) {
                             return AppError::query(s);
                         }
                     }
                 }
             }
+            AppError::query(format!("{context}: {e}"))
         }
-        let _ = env.exception_clear();
+        _ => AppError::query(format!("{context}: {e}")),
     }
-    AppError::query(format!("{context}: {e}"))
 }
 
 pub struct JdbcConn {
-    conn: GlobalRef,
-    _loader: GlobalRef,
+    conn: Global<JObject<'static>>,
+    _loader: Global<JObject<'static>>,
 }
 
 impl JdbcConn {
     pub fn open(params: &JdbcParams) -> AppResult<Self> {
         let vm = jvm()?;
-        let mut env = vm
-            .attach_current_thread()
-            .map_err(|e| AppError::driver(e.to_string()))?;
+        vm.attach_current_thread(|env| -> jni::errors::Result<AppResult<Self>> {
+            Ok(Self::open_attached(params, env))
+        })
+        .map_err(|e| AppError::driver(e.to_string()))?
+    }
 
-        let result = (|| -> Result<(GlobalRef, GlobalRef), jni::errors::Error> {
+    fn open_attached(params: &JdbcParams, env: &mut Env<'_>) -> AppResult<Self> {
+        type Refs = (Global<JObject<'static>>, Global<JObject<'static>>);
+        let result = (|| -> Result<Refs, jni::errors::Error> {
             // URL[] urls = { new File(jar).toURI().toURL(), ... }
-            let url_class = env.find_class("java/net/URL")?;
-            let urls: JObjectArray =
+            let url_class = env.find_class(jni_str!("java/net/URL"))?;
+            let urls: JObjectArray<JObject> =
                 env.new_object_array(params.jars.len() as i32, &url_class, JObject::null())?;
             for (i, jar) in params.jars.iter().enumerate() {
                 let path = env.new_string(jar)?;
                 let file = env.new_object(
-                    "java/io/File",
-                    "(Ljava/lang/String;)V",
+                    jni_str!("java/io/File"),
+                    jni_sig!("(Ljava/lang/String;)V"),
                     &[JValue::Object(&path)],
                 )?;
-                let uri = env.call_method(&file, "toURI", "()Ljava/net/URI;", &[])?.l()?;
-                let url = env.call_method(&uri, "toURL", "()Ljava/net/URL;", &[])?.l()?;
-                env.set_object_array_element(&urls, i as i32, &url)?;
+                let uri = env.call_method(
+                    &file,
+                    jni_str!("toURI"),
+                    jni_sig!("()Ljava/net/URI;"),
+                    &[],
+                )?.l()?;
+                let url = env.call_method(
+                    &uri,
+                    jni_str!("toURL"),
+                    jni_sig!("()Ljava/net/URL;"),
+                    &[],
+                )?.l()?;
+                urls.set_element(env, i, &url)?;
             }
 
             // ClassLoader loader = URLClassLoader.newInstance(urls);
             let loader = env
                 .call_static_method(
-                    "java/net/URLClassLoader",
-                    "newInstance",
-                    "([Ljava/net/URL;)Ljava/net/URLClassLoader;",
+                    jni_str!("java/net/URLClassLoader"),
+                    jni_str!("newInstance"),
+                    jni_sig!("([Ljava/net/URL;)Ljava/net/URLClassLoader;"),
                     &[JValue::Object(&urls)],
                 )?
                 .l()?;
@@ -158,12 +188,12 @@ impl JdbcConn {
             let cls_name = env.new_string(&params.driver_class)?;
             let cls = env
                 .call_static_method(
-                    "java/lang/Class",
-                    "forName",
-                    "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;",
+                    jni_str!("java/lang/Class"),
+                    jni_str!("forName"),
+                    jni_sig!("(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;"),
                     &[
                         JValue::Object(&cls_name),
-                        JValue::Bool(1),
+                        JValue::Bool(true),
                         JValue::Object(&loader),
                     ],
                 )?
@@ -171,36 +201,36 @@ impl JdbcConn {
 
             // Driver driver = (Driver) cls.getDeclaredConstructor().newInstance();
             let empty_classes: JObjectArray =
-                env.new_object_array(0, "java/lang/Class", JObject::null())?;
+                env.new_object_array(0, jni_str!("java/lang/Class"), JObject::null())?;
             let ctor = env
                 .call_method(
                     &cls,
-                    "getDeclaredConstructor",
-                    "([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;",
+                    jni_str!("getDeclaredConstructor"),
+                    jni_sig!("([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;"),
                     &[JValue::Object(&empty_classes)],
                 )?
                 .l()?;
             let empty_args: JObjectArray =
-                env.new_object_array(0, "java/lang/Object", JObject::null())?;
+                env.new_object_array(0, jni_str!("java/lang/Object"), JObject::null())?;
             let driver = env
                 .call_method(
                     &ctor,
-                    "newInstance",
-                    "([Ljava/lang/Object;)Ljava/lang/Object;",
+                    jni_str!("newInstance"),
+                    jni_sig!("([Ljava/lang/Object;)Ljava/lang/Object;"),
                     &[JValue::Object(&empty_args)],
                 )?
                 .l()?;
 
             // Properties props; props.setProperty("user"/"password", ...)
-            let props = env.new_object("java/util/Properties", "()V", &[])?;
+            let props = env.new_object(jni_str!("java/util/Properties"), jni_sig!("()V"), &[])?;
             for (k, v) in [("user", &params.user), ("password", &params.password)] {
                 if !v.is_empty() {
                     let jk = env.new_string(k)?;
                     let jv = env.new_string(v)?;
                     env.call_method(
                         &props,
-                        "setProperty",
-                        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;",
+                        jni_str!("setProperty"),
+                        jni_sig!("(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;"),
                         &[JValue::Object(&jk), JValue::Object(&jv)],
                     )?;
                 }
@@ -211,8 +241,8 @@ impl JdbcConn {
             let conn = env
                 .call_method(
                     &driver,
-                    "connect",
-                    "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;",
+                    jni_str!("connect"),
+                    jni_sig!("(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"),
                     &[JValue::Object(&jurl), JValue::Object(&props)],
                 )?
                 .l()?;
@@ -230,40 +260,52 @@ impl JdbcConn {
                 }
                 Ok(Self { conn, _loader: loader })
             }
-            Err(e) => Err(AppError::connect(jerr(&mut env, e, "JDBC connect").message)),
+            Err(e) => Err(AppError::connect(jerr(env, e, "JDBC connect").message)),
         }
     }
 
     fn with_env<T>(
         &self,
-        f: impl FnOnce(&mut AttachGuard<'_>) -> Result<T, jni::errors::Error>,
+        f: impl FnOnce(&mut Env<'_>) -> Result<T, jni::errors::Error>,
         context: &str,
     ) -> AppResult<T> {
         let vm = jvm()?;
-        let mut env = vm
-            .attach_current_thread()
-            .map_err(|e| AppError::driver(e.to_string()))?;
-        f(&mut env).map_err(|e| jerr(&mut env, e, context))
+        // The attachment pushes its own JNI stack frame, so locals created in
+        // `f` are released when it returns.
+        vm.attach_current_thread(|env| -> jni::errors::Result<AppResult<T>> {
+            Ok(f(env).map_err(|e| jerr(env, e, context)))
+        })
+            .map_err(|e| AppError::driver(e.to_string()))?
     }
 }
 
 /// Read result-set metadata: (labels, type names).
 fn rs_columns(
-    env: &mut AttachGuard<'_>,
+    env: &mut Env<'_>,
     rs: &JObject,
 ) -> Result<Vec<ColumnMeta>, jni::errors::Error> {
     let md = env
-        .call_method(rs, "getMetaData", "()Ljava/sql/ResultSetMetaData;", &[])?
+        .call_method(rs, jni_str!("getMetaData"), jni_sig!("()Ljava/sql/ResultSetMetaData;"), &[])?
         .l()?;
-    let n = env.call_method(&md, "getColumnCount", "()I", &[])?.i()?;
+    let n = env.call_method(&md, jni_str!("getColumnCount"), jni_sig!("()I"), &[])?.i()?;
     let mut cols = Vec::with_capacity(n as usize);
     for i in 1..=n {
         let label_obj = env
-            .call_method(&md, "getColumnLabel", "(I)Ljava/lang/String;", &[JValue::Int(i)])?
+            .call_method(
+                &md,
+                jni_str!("getColumnLabel"),
+                jni_sig!("(I)Ljava/lang/String;"),
+                &[JValue::Int(i)],
+            )?
             .l()?;
         let label = get_str(env, label_obj)?.unwrap_or_default();
         let ty_obj = env
-            .call_method(&md, "getColumnTypeName", "(I)Ljava/lang/String;", &[JValue::Int(i)])?
+            .call_method(
+                &md,
+                jni_str!("getColumnTypeName"),
+                jni_sig!("(I)Ljava/lang/String;"),
+                &[JValue::Int(i)],
+            )?
             .l()?;
         let ty = get_str(env, ty_obj)?.unwrap_or_default();
         cols.push(ColumnMeta::new(label, ty.to_ascii_lowercase()));
@@ -272,21 +314,21 @@ fn rs_columns(
 }
 
 fn get_str(
-    env: &mut AttachGuard<'_>,
+    env: &mut Env<'_>,
     obj: JObject,
 ) -> Result<Option<String>, jni::errors::Error> {
     if obj.is_null() {
         return Ok(None);
     }
-    let js = JString::from(obj);
-    let s: String = env.get_string(&js)?.into();
-    env.delete_local_ref(js)?;
+    let js = env.cast_local::<JString>(obj)?;
+    let s: String = js.try_to_string(env)?;
+    env.delete_local_ref(js);
     Ok(Some(s))
 }
 
 /// Iterate a ResultSet, pushing text rows into the sink. Returns stopped_early.
 fn drain_rs(
-    env: &mut AttachGuard<'_>,
+    env: &mut Env<'_>,
     rs: &JObject,
     ncols: usize,
     cancel: &AtomicBool,
@@ -296,14 +338,19 @@ fn drain_rs(
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok((true, Some(AppError::cancelled())));
         }
-        let has = env.call_method(rs, "next", "()Z", &[])?.z()?;
+        let has = env.call_method(rs, jni_str!("next"), jni_sig!("()Z"), &[])?.z()?;
         if !has {
             return Ok((false, None));
         }
         let mut row: Vec<DbValue> = Vec::with_capacity(ncols);
         for i in 1..=ncols as i32 {
             let obj = env
-                .call_method(rs, "getString", "(I)Ljava/lang/String;", &[JValue::Int(i)])?
+                .call_method(
+                    rs,
+                    jni_str!("getString"),
+                    jni_sig!("(I)Ljava/lang/String;"),
+                    &[JValue::Int(i)],
+                )?
                 .l()?;
             let s = get_str(env, obj)?;
             row.push(match s {
@@ -334,17 +381,37 @@ impl DbConnection for JdbcConn {
         let meta = self.with_env(
             |env| {
                 let stmt = env
-                    .call_method(conn, "createStatement", "()Ljava/sql/Statement;", &[])?
+                    .call_method(
+                        conn,
+                        jni_str!("createStatement"),
+                        jni_sig!("()Ljava/sql/Statement;"),
+                        &[],
+                    )?
                     .l()?;
-                let _ = env.call_method(&stmt, "setFetchSize", "(I)V", &[JValue::Int(1000)]);
+                let _ = env.call_method(
+                    &stmt,
+                    jni_str!("setFetchSize"),
+                    jni_sig!("(I)V"),
+                    &[JValue::Int(1000)],
+                );
                 let jsql = env.new_string(sql)?;
                 let has_rs = env
-                    .call_method(&stmt, "execute", "(Ljava/lang/String;)Z", &[JValue::Object(&jsql)])?
+                    .call_method(
+                        &stmt,
+                        jni_str!("execute"),
+                        jni_sig!("(Ljava/lang/String;)Z"),
+                        &[JValue::Object(&jsql)],
+                    )?
                     .z()?;
 
                 let meta = if has_rs {
                     let rs = env
-                        .call_method(&stmt, "getResultSet", "()Ljava/sql/ResultSet;", &[])?
+                        .call_method(
+                            &stmt,
+                            jni_str!("getResultSet"),
+                            jni_sig!("()Ljava/sql/ResultSet;"),
+                            &[],
+                        )?
                         .l()?;
                     let columns = rs_columns(env, &rs)?;
                     let mut stopped_by_columns = false;
@@ -357,17 +424,22 @@ impl DbConnection for JdbcConn {
                         drain_rs(env, &rs, columns.len(), cancel, on_row)?
                     };
                     inner_err = err;
-                    let _ = env.call_method(&rs, "close", "()V", &[]);
+                    let _ = env.call_method(&rs, jni_str!("close"), jni_sig!("()V"), &[]);
                     ExecMeta { columns: Some(columns), affected: None, stopped_early }
                 } else {
-                    let n = env.call_method(&stmt, "getUpdateCount", "()I", &[])?.i()?;
+                    let n = env.call_method(
+                        &stmt,
+                        jni_str!("getUpdateCount"),
+                        jni_sig!("()I"),
+                        &[],
+                    )?.i()?;
                     ExecMeta {
                         columns: None,
                         affected: if n >= 0 { Some(n as u64) } else { None },
                         stopped_early: false,
                     }
                 };
-                let _ = env.call_method(&stmt, "close", "()V", &[]);
+                let _ = env.call_method(&stmt, jni_str!("close"), jni_sig!("()V"), &[]);
                 Ok(meta)
             },
             "JDBC execute",
@@ -388,22 +460,27 @@ impl DbConnection for JdbcConn {
         self.with_env(
             |env| {
                 let md = env
-                    .call_method(conn, "getMetaData", "()Ljava/sql/DatabaseMetaData;", &[])?
+                    .call_method(
+                        conn,
+                        jni_str!("getMetaData"),
+                        jni_sig!("()Ljava/sql/DatabaseMetaData;"),
+                        &[],
+                    )?
                     .l()?;
 
                 // getTables(null, null, "%", {"TABLE","VIEW"})
                 let pattern = env.new_string("%")?;
                 let types: JObjectArray =
-                    env.new_object_array(2, "java/lang/String", JObject::null())?;
+                    env.new_object_array(2, jni_str!("java/lang/String"), JObject::null())?;
                 let t0 = env.new_string("TABLE")?;
                 let t1 = env.new_string("VIEW")?;
-                env.set_object_array_element(&types, 0, &t0)?;
-                env.set_object_array_element(&types, 1, &t1)?;
+                types.set_element(env, 0, &t0)?;
+                types.set_element(env, 1, &t1)?;
                 let rs = env
                     .call_method(
                         &md,
-                        "getTables",
-                        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/sql/ResultSet;",
+                        jni_str!("getTables"),
+                        jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/sql/ResultSet;"),
                         &[
                             JValue::Object(&JObject::null()),
                             JValue::Object(&JObject::null()),
@@ -419,14 +496,14 @@ impl DbConnection for JdbcConn {
                     ControlFlow::Continue(())
                 };
                 drain_rs(env, &rs, 4, &none, &mut sink)?;
-                let _ = env.call_method(&rs, "close", "()V", &[]);
+                let _ = env.call_method(&rs, jni_str!("close"), jni_sig!("()V"), &[]);
 
                 // getColumns(null, null, "%", "%")
                 let rs = env
                     .call_method(
                         &md,
-                        "getColumns",
-                        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/sql/ResultSet;",
+                        jni_str!("getColumns"),
+                        jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/sql/ResultSet;"),
                         &[
                             JValue::Object(&JObject::null()),
                             JValue::Object(&JObject::null()),
@@ -443,7 +520,7 @@ impl DbConnection for JdbcConn {
                 };
                 // Need columns 1..18; drain first 18.
                 drain_rs(env, &rs, 18, &none, &mut sink)?;
-                let _ = env.call_method(&rs, "close", "()V", &[]);
+                let _ = env.call_method(&rs, jni_str!("close"), jni_sig!("()V"), &[]);
                 Ok(())
             },
             "JDBC catalog",
@@ -497,7 +574,7 @@ impl Drop for JdbcConn {
         let conn = self.conn.as_obj();
         let _ = self.with_env(
             |env| {
-                let _ = env.call_method(conn, "close", "()V", &[]);
+                let _ = env.call_method(conn, jni_str!("close"), jni_sig!("()V"), &[]);
                 Ok(())
             },
             "JDBC close",
@@ -509,5 +586,92 @@ fn txt(row: &[DbValue], i: usize) -> String {
     match row.get(i) {
         Some(DbValue::Text(s)) => s.clone(),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// End-to-end JDBC round-trip against H2 in-memory. Opt-in: needs a JVM
+    /// and an H2 jar, so it is ignored by default.
+    ///   QUERYDECK_TEST_H2_JAR=/path/to/h2.jar \
+    ///     cargo test --lib drivers::jdbc -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn h2_roundtrip() {
+        let Ok(jar) = std::env::var("QUERYDECK_TEST_H2_JAR") else {
+            panic!("set QUERYDECK_TEST_H2_JAR to an h2 jar path");
+        };
+        let params = JdbcParams {
+            url: "jdbc:h2:mem:qdtest;DB_CLOSE_DELAY=-1".into(),
+            driver_class: "org.h2.Driver".into(),
+            jars: vec![jar],
+            user: "sa".into(),
+            password: String::new(),
+        };
+        let mut conn = JdbcConn::open(&params).expect("open");
+
+        conn.ping().expect("ping");
+
+        let cancel = AtomicBool::new(false);
+        let mut sink = |_: RowEvent| ControlFlow::Continue(());
+        conn.execute(
+            "CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(32))",
+            &cancel,
+            &mut sink,
+        )
+        .expect("create");
+        conn.execute(
+            "INSERT INTO items VALUES (1, 'alpha'), (2, 'beta')",
+            &cancel,
+            &mut sink,
+        )
+        .expect("insert");
+
+        let mut cols: Vec<ColumnMeta> = Vec::new();
+        let mut rows: Vec<Vec<DbValue>> = Vec::new();
+        let mut collect = |ev: RowEvent| -> ControlFlow<()> {
+            match ev {
+                RowEvent::Columns(c) => cols = c,
+                RowEvent::Row(r) => rows.push(r),
+            }
+            ControlFlow::Continue(())
+        };
+        let meta = conn
+            .execute("SELECT id, name FROM items ORDER BY id", &cancel, &mut collect)
+            .expect("select");
+
+        assert_eq!(cols.len(), 2, "column count");
+        assert_eq!(rows.len(), 2, "row count");
+        assert_eq!(txt(&rows[0], 1), "alpha");
+        assert_eq!(txt(&rows[1], 1), "beta");
+        assert!(meta.columns.is_some());
+
+        let catalog = conn.catalog().expect("catalog");
+        let found = catalog
+            .schemas
+            .iter()
+            .flat_map(|s| s.tables.iter())
+            .any(|t| t.name.eq_ignore_ascii_case("items"));
+        assert!(found, "catalog should list the items table");
+
+        // Java-side failures must surface as readable messages, not bare JNI
+        // error codes — the exception-mapping path has its own quirks.
+        let err = conn
+            .execute("SELECT * FROM no_such_table", &cancel, &mut sink)
+            .expect_err("bad SQL should fail");
+        assert!(
+            err.message.to_lowercase().contains("no_such_table"),
+            "exception text should name the missing table, got: {}",
+            err.message
+        );
+
+        println!(
+            "jdbc round-trip OK: {} cols, {} rows\nerror text: {}",
+            cols.len(),
+            rows.len(),
+            err.message.lines().next().unwrap_or_default()
+        );
     }
 }
