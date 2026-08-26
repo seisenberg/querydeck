@@ -9,6 +9,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// __TAURI_EVENT_PLUGIN_INTERNALS__ is declared (non-optional) by
+// @tauri-apps/api's own ambient types, so it is deliberately not redeclared.
 interface Win extends Window {
   __TAURI_INTERNALS__?: any;
   __QD_MOCK__?: boolean;
@@ -28,6 +30,12 @@ if (!w.__TAURI_INTERNALS__) {
     for (const id of listeners.get(event) ?? []) {
       callbacks.get(id)?.({ event, id, payload });
     }
+  }
+
+  /** Drop a subscription and its callback. */
+  function unregisterListener(event: string, id: number) {
+    listeners.get(event)?.delete(id);
+    callbacks.delete(id);
   }
 
   // ---- sample data ----
@@ -415,7 +423,7 @@ ORDER BY month DESC, revenue DESC;`;
         return args.handler;
       }
       if (cmd === "plugin:event|unlisten") {
-        listeners.get(args.event)?.delete(args.eventId);
+        unregisterListener(args.event, args.eventId);
         return;
       }
       const h = handlers[cmd];
@@ -424,6 +432,10 @@ ORDER BY month DESC, revenue DESC;`;
     },
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
   };
+
+  // @tauri-apps/api's unlisten() reaches for this global before invoking the
+  // unlisten command; without it every effect cleanup throws in the preview.
+  w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener };
 
   // Hook for driving scenarios from the devtools console / test harness.
   (w as any).__QD_EMIT__ = emit;
